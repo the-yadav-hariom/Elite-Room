@@ -1,5 +1,8 @@
 {
+  "cleanUrls": true,
   "rewrites": [
-    { "source": "/(.*)", "destination": "/client/dist/index.html" }
+    { "source": "/staff", "destination": "/staff.html" },
+    { "source": "/guest", "destination": "/guest.html" },
+    { "source": "/", "destination": "/index.html" }
   ]
 }
