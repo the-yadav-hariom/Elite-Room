@@ -207,7 +207,22 @@
         };
 
         window.addEventListener('storage', handleStorage);
-        return () => window.removeEventListener('storage', handleStorage);
+
+        let bc = null;
+        if (typeof BroadcastChannel !== 'undefined') {
+          bc = new BroadcastChannel('elite_jonrad_hotel_bus');
+          bc.onmessage = (e) => {
+            if (e.data && e.data.type === 'NEW_REQUEST') {
+              setRequests(prev => [e.data.request, ...prev.filter(r => r.id !== e.data.request.id)]);
+              startRinging();
+            }
+          };
+        }
+
+        return () => {
+          window.removeEventListener('storage', handleStorage);
+          if (bc) bc.close();
+        };
       }, [startRinging, stopRinging]);
 
       useEffect(() => {

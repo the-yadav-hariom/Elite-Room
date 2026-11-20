@@ -95,8 +95,12 @@
         try {
           const existing = JSON.parse(localStorage.getItem('elite_jonrad_requests') || '[]');
           localStorage.setItem('elite_jonrad_requests', JSON.stringify([newReq, ...existing]));
-          // Signal continuous ringing on staff side!
           localStorage.setItem('elite_jonrad_staff_ringing', 'true');
+
+          if (typeof BroadcastChannel !== 'undefined') {
+            const bc = new BroadcastChannel('elite_jonrad_hotel_bus');
+            bc.postMessage({ type: 'NEW_REQUEST', request: newReq });
+          }
         } catch (e) {
           console.warn('Storage dispatch error', e);
         }
