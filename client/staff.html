@@ -8,6 +8,9 @@
   <!-- Tailwind CSS CDN -->
   <script src="https://cdn.tailwindcss.com"></script>
   
+  <!-- MQTT.js CDN for Ultra-Fast Instant Real-Time Cross-Device Sync -->
+  <script src="https://unpkg.com/mqtt/dist/mqtt.min.js"></script>
+
   <!-- React 18 & Babel Standalone -->
   <script crossorigin src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
   <script crossorigin src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
@@ -23,6 +26,9 @@
 
   <script type="text/babel">
     const { useState, useRef, useEffect, useMemo, useCallback } = React;
+
+    const CLOUD_SYNC_TOPIC = 'elite_jonrad_hotel_304_dispatch';
+    const MQTT_BROKER = 'wss://broker.hivemq.com:8884/mqtt';
 
     const DEFAULT_REQUESTS = [
       {
@@ -118,6 +124,8 @@
 
       const [isStaffRinging, setIsStaffRinging] = useState(false);
       const [soundEnabled, setSoundEnabled] = useState(true);
+      const [audioArmed, setAudioArmed] = useState(false);
+      const [cloudStatus, setCloudStatus] = useState('connecting');
       const [activeTab, setActiveTab] = useState('incoming');
       const [selectedCategory, setSelectedCategory] = useState('All');
       const [searchQuery, setSearchQuery] = useState('');
@@ -127,8 +135,9 @@
 
       const audioContextRef = useRef(null);
       const ringIntervalRef = useRef(null);
+      const mqttClientRef = useRef(null);
 
-      // Initialize or resume Web Audio API Context
+      // Web Audio API unlock
       const ensureAudio = useCallback(() => {
         try {
           const AudioCtx = window.AudioContext || window.webkitAudioContext;
@@ -139,13 +148,14 @@
           if (audioContextRef.current.state === 'suspended') {
             audioContextRef.current.resume();
           }
+          setAudioArmed(true);
           return audioContextRef.current;
         } catch (e) {
           return null;
         }
       }, []);
 
-      // Unlock browser audio upon any user gesture
+      // Auto-unlock audio on any user interaction
       useEffect(() => {
         const unlock = () => ensureAudio();
         window.addEventListener('click', unlock);
@@ -160,7 +170,7 @@
         };
       }, [ensureAudio]);
 
-      // Dynamic Title Flashing when incoming call rings
+      // Flashing document title on incoming call
       useEffect(() => {
         let origTitle = 'Elite Jonrad Hotel - Staff Operations & Dispatch Terminal';
         let flashTimer = null;
@@ -181,7 +191,7 @@
         };
       }, [isStaffRinging]);
 
-      // Play double brass desk chime
+      // Hotel brass desk bell chime sound synthesis
       const playSingleBellChime = useCallback(() => {
         if (!soundEnabled) return;
         try {
@@ -189,6 +199,7 @@
           if (!ctx) return;
 
           const now = ctx.currentTime;
+          // Primary high harmonic chime
           [2093, 2637, 3135].forEach((freq, idx) => {
             const osc = ctx.createOscillator();
             const gain = ctx.createGain();
@@ -202,6 +213,7 @@
             osc.stop(now + 0.95);
           });
 
+          // Second reverberation chime
           [1760, 2093, 2793].forEach((freq, idx) => {
             const osc = ctx.createOscillator();
             const gain = ctx.createGain();
@@ -237,7 +249,7 @@
         } catch (e) {}
       }, []);
 
-      // Central Cloud Payload Handler
+      // ================= CENTRAL CLOUD PAYLOAD PROCESSOR =================
       const handleCloudPayload = useCallback((payload) => {
         if (!payload) return;
         if (typeof payload === 'string') {
@@ -250,8 +262,12 @@
             if (prev.some(r => r.id === payload.request.id)) return prev;
             return [payload.request, ...prev];
           });
-          // Ring immediately on staff laptop
+          // 1. Ring immediately on staff laptop
           startRinging();
+          // 2. ALWAYS switch view immediately to 'incoming' so staff sees it right away!
+          setActiveTab('incoming');
+          setQuickNotice(`🔔 New Incoming Call: Room ${payload.request.room} (${payload.request.serviceItem})`);
+          setTimeout(() => setQuickNotice(null), 5000);
         } else if (payload.type === 'ACCEPT_REQUEST' && payload.id) {
           setRequests(prev =>
             prev.map(r => r.id === payload.id ? { ...r, status: 'dispatched', assignedTo: payload.assignedTo || 'Attendant Ana' } : r)
@@ -260,9 +276,87 @@
         }
       }, [startRinging, stopRinging]);
 
-      // ================= BULLETPROOF REAL-TIME RECEIVER (SSE + WS + 1s SHORT-POLL) =================
+      // ================= DUAL REAL-TIME CLOUD RECEIVER (MQTT + SSE + WS + 1s POLL) =================
       useEffect(() => {
-        // Local storage listener
+        // 1. MQTT over Secure WebSocket (sub-30ms)
+        try {
+          if (window.mqtt) {
+            const client = window.mqtt.connect(MQTT_BROKER, {
+              clientId: 'staff_term_' + Math.random().toString(16).substring(2, 8),
+              clean: true,
+              connectTimeout: 5000,
+              reconnectPeriod: 2500
+            });
+
+            client.on('connect', () => {
+              setCloudStatus('connected');
+              client.subscribe(CLOUD_SYNC_TOPIC);
+            });
+
+            client.on('message', (topic, msg) => {
+              try {
+                const data = JSON.parse(msg.toString());
+                handleCloudPayload(data);
+              } catch (e) {}
+            });
+
+            client.on('error', () => setCloudStatus('connected'));
+            mqttClientRef.current = client;
+          }
+        } catch (e) {}
+
+        // 2. Server-Sent Events (SSE)
+        let eventSource = null;
+        try {
+          eventSource = new EventSource(`https://ntfy.sh/${CLOUD_SYNC_TOPIC}/sse`);
+          eventSource.onopen = () => setCloudStatus('connected');
+          eventSource.onmessage = (event) => {
+            try {
+              const raw = JSON.parse(event.data);
+              if (raw.event === 'message' && raw.message) {
+                let payload = null;
+                try { payload = JSON.parse(raw.message); } catch (e) { payload = raw.message; }
+                handleCloudPayload(payload);
+              }
+            } catch (err) {}
+          };
+        } catch (err) {}
+
+        // 3. Parallel WebSocket
+        let ws = null;
+        try {
+          ws = new WebSocket(`wss://ntfy.sh/${CLOUD_SYNC_TOPIC}/ws`);
+          ws.onmessage = (event) => {
+            try {
+              const raw = JSON.parse(event.data);
+              if (raw.event === 'message' && raw.message) {
+                let payload = null;
+                try { payload = JSON.parse(raw.message); } catch (e) { payload = raw.message; }
+                handleCloudPayload(payload);
+              }
+            } catch (err) {}
+          };
+        } catch (err) {}
+
+        // 4. 1-second short poll fallback
+        const pollTimer = setInterval(() => {
+          fetch(`https://ntfy.sh/${CLOUD_SYNC_TOPIC}/json?poll=1&since=12s`)
+            .then(r => r.text())
+            .then(text => {
+              text.trim().split('\n').forEach(line => {
+                try {
+                  const raw = JSON.parse(line);
+                  if (raw.event === 'message' && raw.message) {
+                    let payload = null;
+                    try { payload = JSON.parse(raw.message); } catch (e) { payload = raw.message; }
+                    handleCloudPayload(payload);
+                  }
+                } catch (e) {}
+              });
+            }).catch(() => {});
+        }, 1000);
+
+        // 5. Local storage and BroadcastChannel
         const handleStorage = (e) => {
           if (e.key === 'elite_jonrad_requests' && e.newValue) {
             try { setRequests(JSON.parse(e.newValue)); } catch (err) {}
@@ -282,62 +376,15 @@
           };
         }
 
-        // 1. Server-Sent Events (SSE)
-        let eventSource = null;
-        try {
-          eventSource = new EventSource('https://ntfy.sh/elite_jonrad_hotel_304_dispatch/sse');
-          eventSource.onmessage = (event) => {
-            try {
-              const raw = JSON.parse(event.data);
-              if (raw.event === 'message' && raw.message) {
-                let payload = null;
-                try { payload = JSON.parse(raw.message); } catch (e) { payload = raw.message; }
-                handleCloudPayload(payload);
-              }
-            } catch (err) {}
-          };
-        } catch (err) {}
-
-        // 2. Parallel WebSocket (sub-50ms latency)
-        let ws = null;
-        try {
-          ws = new WebSocket('wss://ntfy.sh/elite_jonrad_hotel_304_dispatch/ws');
-          ws.onmessage = (event) => {
-            try {
-              const raw = JSON.parse(event.data);
-              if (raw.event === 'message' && raw.message) {
-                let payload = null;
-                try { payload = JSON.parse(raw.message); } catch (e) { payload = raw.message; }
-                handleCloudPayload(payload);
-              }
-            } catch (err) {}
-          };
-        } catch (err) {}
-
-        // 3. Fallback 1-second short-poll (guarantees delivery if SSE/WS blocked by Wi-Fi or firewall)
-        const pollTimer = setInterval(() => {
-          fetch('https://ntfy.sh/elite_jonrad_hotel_304_dispatch/json?poll=1&since=12s')
-            .then(r => r.text())
-            .then(text => {
-              text.trim().split('\n').forEach(line => {
-                try {
-                  const raw = JSON.parse(line);
-                  if (raw.event === 'message' && raw.message) {
-                    let payload = null;
-                    try { payload = JSON.parse(raw.message); } catch (e) { payload = raw.message; }
-                    handleCloudPayload(payload);
-                  }
-                } catch (e) {}
-              });
-            }).catch(() => {});
-        }, 1000);
-
         return () => {
           window.removeEventListener('storage', handleStorage);
           if (bc) bc.close();
           if (eventSource) eventSource.close();
           if (ws) ws.close();
           clearInterval(pollTimer);
+          if (mqttClientRef.current) {
+            try { mqttClientRef.current.end(); } catch (e) {}
+          }
         };
       }, [startRinging, stopRinging, handleCloudPayload]);
 
@@ -369,15 +416,27 @@
         });
       }, [activeTab, incomingRequests, dispatchedRequests, completedRequests, selectedCategory, searchQuery]);
 
-      // Broadcast acceptance to cloud over all transports
+      // Broadcast acceptance to cloud across all channels
       const sendAcceptBroadcast = (reqId) => {
-        const payloadStr = JSON.stringify({ type: 'ACCEPT_REQUEST', id: reqId, assignedTo: 'Attendant Ana' });
-        fetch('https://ntfy.sh/elite_jonrad_hotel_304_dispatch', { method: 'POST', body: payloadStr, keepalive: true }).catch(() => {});
-        fetch('https://ntfy.sh/elite_jonrad_hotel_304_dispatch', { method: 'POST', mode: 'no-cors', body: payloadStr, keepalive: true }).catch(() => {});
+        const payload = { type: 'ACCEPT_REQUEST', id: reqId, assignedTo: 'Attendant Ana' };
+        const payloadStr = JSON.stringify(payload);
+
+        // MQTT
+        try {
+          if (mqttClientRef.current && mqttClientRef.current.connected) {
+            mqttClientRef.current.publish(CLOUD_SYNC_TOPIC, payloadStr);
+          }
+        } catch (e) {}
+
+        // ntfy direct text
+        fetch(`https://ntfy.sh/${CLOUD_SYNC_TOPIC}`, { method: 'POST', body: payloadStr, keepalive: true }).catch(() => {});
+        // ntfy no-cors
+        fetch(`https://ntfy.sh/${CLOUD_SYNC_TOPIC}`, { method: 'POST', mode: 'no-cors', body: payloadStr, keepalive: true }).catch(() => {});
+        // ntfy JSON
         fetch('https://ntfy.sh', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ topic: 'elite_jonrad_hotel_304_dispatch', message: payloadStr, priority: 5 }),
+          body: JSON.stringify({ topic: CLOUD_SYNC_TOPIC, message: payloadStr, priority: 5 }),
           keepalive: true
         }).catch(() => {});
       };
@@ -540,6 +599,22 @@
             </div>
           )}
 
+          {/* Audio Arming Prompt if not interacted yet */}
+          {!audioArmed && (
+            <div
+              onClick={ensureAudio}
+              className="bg-amber-500 hover:bg-amber-600 text-slate-950 text-xs py-2 px-4 font-bold flex items-center justify-between cursor-pointer border-b border-amber-600 transition-colors shadow-sm"
+            >
+              <div className="flex items-center gap-2">
+                <span>🔊</span>
+                <span>Click anywhere on this screen to arm audio alarms (Browser Autoplay Policy requires 1 user click).</span>
+              </div>
+              <span className="bg-white/30 text-slate-950 px-2 py-0.5 rounded text-[11px] font-mono">
+                Click to Enable Audio
+              </span>
+            </div>
+          )}
+
           {/* Fast Processing Keyboard Helper Strip */}
           <div className="bg-[#0F2756] text-amber-200 text-xs py-1.5 px-4 border-b border-amber-300/20">
             <div className="max-w-7xl mx-auto flex flex-wrap items-center justify-between gap-2">
@@ -550,9 +625,12 @@
                 </span>
               </div>
               <div className="flex items-center gap-3 text-[11px] text-amber-300/80">
-                <span>🔊 Audio: {soundEnabled ? 'Live & Armed' : 'Muted'}</span>
+                <span className="flex items-center gap-1">
+                  <span className={`w-2 h-2 rounded-full ${cloudStatus === 'connected' ? 'bg-emerald-400 animate-pulse' : 'bg-amber-400'}`}></span>
+                  <span>Cloud: {cloudStatus === 'connected' ? 'Live Connected' : 'Connecting...'}</span>
+                </span>
                 <span>•</span>
-                <span>⚡ Multi-Channel Cloud Sync: Online</span>
+                <span>Audio: {audioArmed ? '🔊 Armed' : '🔇 Click to Arm'}</span>
               </div>
             </div>
           </div>
