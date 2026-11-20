@@ -1,0 +1,392 @@
+<!DOCTYPE html>
+
+<html lang="en"><head>
+<meta charset="utf-8"/>
+<meta content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover" name="viewport"/>
+<title>The Grand Azure - In-Room Guest Service</title>
+<!-- Tailwind CSS v3 with Forms and Container Queries -->
+<script src="https://cdn.tailwindcss.com?plugins=forms,container-queries"></script>
+<script>
+    tailwind.config = {
+      theme: {
+        extend: {
+          colors: {
+            azure: {
+              50: '#F0F7FF',
+              100: '#E0EFFF',
+              500: '#1B64DA',
+              800: '#0F2C59',
+              900: '#091A36'
+            },
+            terracotta: {
+              400: '#E76F51',
+              500: '#C84B31',
+              600: '#AF3A23',
+              700: '#8A2613'
+            },
+            champagne: {
+              100: '#F9F6F0',
+              200: '#EFE9DE',
+              400: '#D4AF37'
+            }
+          },
+          fontFamily: {
+            serif: ['Georgia', 'Cambria', 'serif'],
+            sans: ['-apple-system', 'BlinkMacSystemFont', 'Segoe UI', 'Roboto', 'Helvetica', 'Arial', 'sans-serif']
+          },
+          boxShadow: {
+            'bell-ambient': '0 20px 40px -10px rgba(184, 60, 31, 0.45), 0 0 0 1px rgba(255, 255, 255, 0.15) inset',
+            'bell-active': '0 12px 25px -8px rgba(184, 60, 31, 0.6), 0 0 0 6px rgba(200, 75, 49, 0.25)'
+          }
+        }
+      }
+    }
+  </script>
+<!-- BEGIN: Custom Styles -->
+<style data-purpose="animations">
+    @keyframes subtlePulse {
+      0%, 100% {
+        transform: scale(1);
+        box-shadow: 0 20px 38px -10px rgba(184, 60, 31, 0.42);
+      }
+      50% {
+        transform: scale(1.025);
+        box-shadow: 0 25px 46px -8px rgba(184, 60, 31, 0.58);
+      }
+    }
+    
+    @keyframes rippleWave {
+      0% {
+        opacity: 0.8;
+        transform: scale(0.95);
+      }
+      100% {
+        opacity: 0;
+        transform: scale(1.45);
+      }
+    }
+
+    .animate-bell-pulse {
+      animation: subtlePulse 3.5s ease-in-out infinite;
+    }
+
+    .ripple-ring {
+      position: absolute;
+      inset: -12px;
+      border-radius: 9999px;
+      border: 2px solid rgba(200, 75, 49, 0.4);
+      pointer-events: none;
+      animation: rippleWave 2s cubic-bezier(0, 0.2, 0.8, 1) infinite;
+    }
+    
+    .touch-press {
+      transition: transform 0.12s ease, filter 0.12s ease;
+    }
+    .touch-press:active {
+      transform: scale(0.96);
+      filter: brightness(0.95);
+    }
+  </style>
+<style data-purpose="mobile-utilities">
+    /* Safe padding for iOS notches and home indicator */
+    .ios-safe-top {
+      padding-top: max(env(safe-area-inset-top, 16px), 16px);
+    }
+    .ios-safe-bottom {
+      padding-bottom: max(env(safe-area-inset-bottom, 20px), 20px);
+    }
+    /* Hide standard scrollbars for sleek app feel */
+    ::-webkit-scrollbar {
+      display: none;
+    }
+  </style>
+<!-- END: Custom Styles -->
+</head>
+<body class="bg-[#F8F9FA] text-slate-800 antialiased font-sans min-h-screen flex flex-col justify-between selection:bg-amber-100">
+<!-- BEGIN: MainContainer -->
+<main class="w-full max-w-md mx-auto flex-1 flex flex-col justify-between px-4 pb-4 ios-safe-top ios-safe-bottom" data-purpose="guest-service-app">
+<!-- BEGIN: HeaderSection -->
+<header class="pt-2 pb-3" data-purpose="hotel-branding">
+<div class="flex items-center justify-between mb-2">
+<!-- Hotel monogram and brand name -->
+<div class="flex items-center gap-2.5">
+<div class="w-8 h-8 rounded-full bg-azure-900 text-amber-200 flex items-center justify-center font-serif text-sm font-semibold shadow-sm border border-amber-300/30">
+            GA
+          </div>
+<div>
+<h1 class="text-xs uppercase tracking-widest font-semibold text-slate-500">The Grand Azure</h1>
+<p class="text-sm font-bold text-slate-900 leading-tight">Hotel &amp; Suites Luxury Concierge</p>
+</div>
+</div>
+<!-- Connection badge -->
+<div class="flex items-center gap-1.5 px-2.5 py-1 rounded-full bg-emerald-50 border border-emerald-200/80" data-purpose="status-indicator">
+<span class="w-2 h-2 rounded-full bg-emerald-500 animate-pulse"></span>
+<span class="text-[11px] font-semibold text-emerald-700 tracking-tight">Live Concierge</span>
+</div>
+</div>
+<!-- Current Guest Room Context Banner -->
+<div class="bg-white rounded-2xl p-3 border border-slate-200/80 shadow-[0_2px_8px_rgba(0,0,0,0.03)] flex items-center justify-between mt-2.5">
+<div class="flex items-center gap-3">
+<div class="w-10 h-10 rounded-xl bg-azure-50 text-azure-800 flex items-center justify-center font-bold text-base border border-azure-100">
+            304
+          </div>
+<div>
+<div class="flex items-center gap-1.5">
+<span class="text-xs font-semibold text-slate-900">Executive King Room</span>
+<span class="text-[10px] text-slate-400">• Floor 3</span>
+</div>
+<p class="text-[11px] text-slate-500">Est. Housekeeping response: <span class="text-emerald-600 font-medium">&lt; 6 mins</span></p>
+</div>
+</div>
+<button class="p-2 rounded-xl bg-slate-50 border border-slate-200 text-slate-500 hover:text-slate-800 transition-colors" data-purpose="audio-toggle" id="audioToggleBtn" onclick="toggleChimeSound()" title="Toggle chime feedback">
+<!-- Bell Audio Icon -->
+<svg class="w-4 h-4 text-slate-600" fill="none" id="bellSoundIcon" stroke="currentColor" stroke-width="2" viewbox="0 0 24 24">
+<path d="M15 17h5l-1.405-1.405A2.032 2.032 0 0118 14.158V11a6.002 6.002 0 00-4-5.659V5a2 2 0 10-4 0v.341C7.67 6.165 6 8.388 6 11v3.159c0 .538-.214 1.055-.595 1.436L4 17h5m6 0v1a3 3 0 11-6 0v-1m6 0H9" stroke-linecap="round" stroke-linejoin="round"></path>
+</svg>
+</button>
+</div>
+</header>
+<!-- END: HeaderSection -->
+<!-- BEGIN: HeroCallCaptainSection -->
+<!-- Direct adaptation of circular bell button layout seen in reference snapshot -->
+<section class="my-auto py-5 flex flex-col items-center justify-center text-center relative" data-purpose="hero-call-action">
+<!-- Ripple effect ring -->
+<div class="ripple-ring opacity-0 hidden" id="rippleHalo"></div>
+<!-- Main circular tactile button -->
+<button class="touch-press animate-bell-pulse relative w-56 h-56 rounded-full bg-gradient-to-b from-[#DC5333] via-[#C84B31] to-[#A3341C] text-white flex flex-col items-center justify-center shadow-bell-ambient border-[3px] border-[#FF987A]/30 focus:outline-none" data-purpose="primary-call-button" id="mainCallBellBtn" onclick="triggerServiceCall('Housekeeping Attendant', 'General In-Room Assistance', 'Room 304')">
+<!-- Bell Icon / Desk Chime Graphic -->
+<div class="relative mb-2">
+<div class="w-14 h-12 flex items-center justify-center drop-shadow-md">
+<!-- Polished 3D-styled brass service bell graphic -->
+<svg class="w-12 h-12 text-amber-200 fill-amber-200 drop-shadow-lg" stroke="currentColor" stroke-width="1.2" viewbox="0 0 24 24">
+<path d="M12 2.5a1.25 1.25 0 011.25 1.25V4.2a7.5 7.5 0 016.25 7.4v2.4a2 2 0 00.7 1.5l.8.6a.75.75 0 01-.45 1.3H3.45a.75.75 0 01-.45-1.3l.8-.6a2 2 0 00.7-1.5v-2.4A7.5 7.5 0 0110.75 4.2V3.75A1.25 1.25 0 0112 2.5z" stroke-linecap="round" stroke-linejoin="round"></path>
+<path d="M9 19.5a3 3 0 006 0" stroke-linecap="round"></path>
+</svg>
+</div>
+<!-- Sparkle ping dot -->
+<span class="absolute -top-1 -right-1 flex h-3 w-3">
+<span class="animate-ping absolute inline-flex h-full w-full rounded-full bg-amber-300 opacity-75"></span>
+<span class="relative inline-flex rounded-full h-3 w-3 bg-amber-100"></span>
+</span>
+</div>
+<!-- Call headline -->
+<span class="text-xl font-bold tracking-tight text-white drop-shadow-sm font-sans">
+          Call Housekeeper
+        </span>
+<!-- Subtitle matching reference format ("Table 5" -> "Room 304") -->
+<span class="mt-1 text-xs uppercase tracking-widest font-semibold text-amber-200/90 bg-black/15 px-3 py-0.5 rounded-full">
+          Room 304
+        </span>
+<!-- Tap action micro-cue -->
+<span class="text-[10px] text-white/70 font-light mt-1.5 tracking-wide">
+          Tap for instant chime
+        </span>
+</button>
+<!-- Context Helper Description (matching snapshot text structure) -->
+<div class="mt-6 max-w-[280px]">
+<p class="text-xs text-slate-500 leading-relaxed font-normal">
+          Need towels, water, or immediate assistance? One tap alerts your Floor 3 captain on the staff terminal.
+        </p>
+<p class="text-[11px] text-slate-400 font-medium mt-1">
+          Assigned to: <span class="text-slate-700 font-semibold">Attendant Ana &amp; Reception Desk</span>
+</p>
+</div>
+</section>
+<!-- END: HeroCallCaptainSection -->
+<!-- BEGIN: QuickServiceChipsSection -->
+<!-- Direct adaptation of snapshot quick chips ("Water", "Napkins", "Bill") expanded for guest room needs -->
+<section class="mt-1 mb-3" data-purpose="quick-request-chips">
+<div class="flex items-center justify-between mb-2 px-1">
+<h2 class="text-xs font-bold uppercase tracking-wider text-slate-500">Quick Room Requests</h2>
+<span class="text-[11px] font-medium text-azure-800">One-tap dispatch</span>
+</div>
+<!-- Responsive chip row with horizontal scroll on small viewports -->
+<div class="grid grid-cols-3 gap-2 pb-1" data-purpose="priority-chips">
+<!-- Quick Chip: Water -->
+<button class="touch-press flex items-center justify-center gap-1.5 py-2.5 px-2 bg-white rounded-2xl border border-slate-200 shadow-sm hover:border-slate-300 text-xs font-semibold text-slate-800 focus:outline-none" onclick="triggerServiceCall('Room Service', '2x Still Bottled Waters', 'Room 304')">
+<span aria-label="Water" class="text-base" role="img">💧</span>
+<span>Water</span>
+</button>
+<!-- Quick Chip: Fresh Towels -->
+<button class="touch-press flex items-center justify-center gap-1.5 py-2.5 px-2 bg-white rounded-2xl border border-slate-200 shadow-sm hover:border-slate-300 text-xs font-semibold text-slate-800 focus:outline-none" onclick="triggerServiceCall('Housekeeping', 'Fresh Bath &amp; Face Towels', 'Room 304')">
+<span aria-label="Towels" class="text-base" role="img">🧖</span>
+<span>Towels</span>
+</button>
+<!-- Quick Chip: Front Desk / Bill -->
+<button class="touch-press flex items-center justify-center gap-1.5 py-2.5 px-2 bg-white rounded-2xl border border-slate-200 shadow-sm hover:border-slate-300 text-xs font-semibold text-slate-800 focus:outline-none" onclick="triggerServiceCall('Front Desk', 'Folio / Late Checkout Assistance', 'Room 304')">
+<span aria-label="Bill" class="text-base" role="img">🧾</span>
+<span>Bill / Key</span>
+</button>
+</div>
+<!-- Secondary specific maintenance & refresh actions -->
+<div class="grid grid-cols-2 gap-2 mt-2" data-purpose="secondary-service-buttons">
+<button class="touch-press flex items-center justify-center gap-2 p-2.5 bg-slate-100/90 hover:bg-slate-200/80 rounded-xl border border-slate-200/80 text-left" onclick="triggerServiceCall('Maintenance Tech', 'AC &amp; Room Tech Assistance', 'Room 304')">
+<span class="text-sm">🔧</span>
+<div>
+<div class="text-[11px] font-bold text-slate-800 leading-tight">AC / Tech Check</div>
+<div class="text-[9px] text-slate-500">Wi-Fi, TV, HVAC, power</div>
+</div>
+</button>
+<button class="touch-press flex items-center justify-center gap-2 p-2.5 bg-slate-100/90 hover:bg-slate-200/80 rounded-xl border border-slate-200/80 text-left" onclick="triggerServiceCall('Housekeeping', 'Room Turn Down &amp; Make Up', 'Room 304')">
+<span class="text-sm">🧹</span>
+<div>
+<div class="text-[11px] font-bold text-slate-800 leading-tight">Clean My Room</div>
+<div class="text-[9px] text-slate-500">Fresh bed linens &amp; tidy</div>
+</div>
+</button>
+</div>
+</section>
+<!-- END: QuickServiceChipsSection -->
+<!-- BEGIN: LiveNotificationToast -->
+<!-- Slide-up confirmation toast triggered on click -->
+<div class="hidden transition-all duration-300 transform translate-y-4 mb-2 p-3 bg-slate-900 text-white rounded-2xl shadow-xl border border-slate-800" data-purpose="live-request-tracker" id="statusNotification">
+<div class="flex items-start gap-3">
+<!-- Success ping icon -->
+<div class="mt-0.5 w-6 h-6 rounded-full bg-emerald-500 text-white flex items-center justify-center shrink-0">
+<svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" stroke-width="2.5" viewbox="0 0 24 24">
+<path d="M4.5 12.75l6 6 9-13.5" stroke-linecap="round" stroke-linejoin="round"></path>
+</svg>
+</div>
+<!-- Status message details -->
+<div class="flex-1 text-left">
+<div class="flex items-center justify-between">
+<h4 class="text-xs font-bold text-white tracking-tight" id="toastTitle">Request Sent to Attendant!</h4>
+<span class="text-[10px] text-emerald-400 font-mono">00:01</span>
+</div>
+<p class="text-[11px] text-slate-300 mt-0.5" id="toastDetail">
+            Table 5 / Room 304 chime ringing on floor terminal.
+          </p>
+<div class="mt-2 flex items-center gap-2 text-[10px] text-slate-400 border-t border-slate-800 pt-1.5">
+<span class="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-ping"></span>
+<span>Estimated delivery in <strong class="text-slate-200 font-semibold">4-7 minutes</strong></span>
+</div>
+</div>
+<!-- Close dismiss button -->
+<button class="text-slate-400 hover:text-white p-1 text-xs" onclick="dismissToast()">✕</button>
+</div>
+</div>
+<!-- END: LiveNotificationToast -->
+<!-- BEGIN: FooterAssistanceInfo -->
+<footer class="pt-2 text-center" data-purpose="guest-support-footer">
+<div class="bg-amber-50/70 border border-amber-200/60 rounded-xl px-3 py-2 flex items-center justify-between">
+<div class="flex items-center gap-2 text-left">
+<span class="text-base">🛎️</span>
+<div>
+<div class="text-[11px] font-bold text-slate-800 leading-tight">Need immediate verbal help?</div>
+<div class="text-[10px] text-slate-500">Pick up in-room phone &amp; dial <span class="font-semibold text-slate-700">0</span> or front desk</div>
+</div>
+</div>
+<a class="text-[11px] font-bold px-3 py-1.5 rounded-lg bg-azure-900 text-white hover:bg-azure-800 shadow-sm" href="tel:0">
+          Call Front Desk
+        </a>
+</div>
+<p class="text-[10px] text-slate-400 mt-2">
+        The Grand Azure Hotel • In-Room Hospitality Engine • Room 304 Session
+      </p>
+</footer>
+<!-- END: FooterAssistanceInfo -->
+</main>
+<!-- END: MainContainer -->
+<!-- BEGIN: InteractiveScripts -->
+<script data-purpose="chime-synthesizer">
+    // Synthetic web-audio hotel bell chime so it works reliably with no external sound asset dependencies
+    let audioContext = null;
+    let soundEnabled = true;
+
+    function initAudio() {
+      if (!audioContext) {
+        audioContext = new (window.AudioContext || window.webkitAudioContext)();
+      }
+    }
+
+    function playHotelDeskBell() {
+      if (!soundEnabled) return;
+      try {
+        initAudio();
+        if (audioContext.state === 'suspended') {
+          audioContext.resume();
+        }
+
+        const now = audioContext.currentTime;
+        
+        // High crystalline harmonic desk chime frequencies (brass bell tone)
+        const frequencies = [2093, 3135, 4186];
+        frequencies.forEach((freq, idx) => {
+          const osc = audioContext.createOscillator();
+          const gain = audioContext.createGain();
+
+          osc.type = idx === 0 ? 'sine' : 'triangle';
+          osc.frequency.setValueAtTime(freq, now);
+
+          // Bell ring attack & natural exponential decay
+          gain.gain.setValueAtTime(0.25 / (idx + 1), now);
+          gain.gain.exponentialRampToValueAtTime(0.0001, now + 1.6 + (idx * 0.2));
+
+          osc.connect(gain);
+          gain.connect(audioContext.destination);
+
+          osc.start(now);
+          osc.stop(now + 1.8);
+        });
+      } catch (e) {
+        console.warn('Audio feedback not permitted or supported yet:', e);
+      }
+    }
+
+    function toggleChimeSound() {
+      soundEnabled = !soundEnabled;
+      const icon = document.getElementById('bellSoundIcon');
+      if (soundEnabled) {
+        icon.classList.remove('opacity-30', 'line-through');
+        playHotelDeskBell();
+      } else {
+        icon.classList.add('opacity-30');
+      }
+    }
+  </script>
+<script data-purpose="service-dispatcher">
+    let toastTimeout = null;
+
+    function triggerServiceCall(department, serviceItem, roomNumber) {
+      // 1. Play auditory desk chime
+      playHotelDeskBell();
+
+      // 2. Trigger tactile button feedback
+      const mainBtn = document.getElementById('mainCallBellBtn');
+      const ripple = document.getElementById('rippleHalo');
+      
+      ripple.classList.remove('hidden');
+      ripple.style.animation = 'none';
+      void ripple.offsetWidth; // trigger reflow
+      ripple.style.animation = 'rippleWave 1.4s cubic-bezier(0, 0.2, 0.8, 1)';
+
+      // 3. Update dynamic notification banner
+      const toast = document.getElementById('statusNotification');
+      const toastTitle = document.getElementById('toastTitle');
+      const toastDetail = document.getElementById('toastDetail');
+
+      toastTitle.innerText = `${serviceItem} Requested!`;
+      toastDetail.innerHTML = `Dispatched to <strong class="text-white">${department}</strong>. Floor 3 attendant Ana has been alerted for <span class="text-amber-300 font-semibold">${roomNumber}</span>.`;
+
+      toast.classList.remove('hidden');
+      setTimeout(() => {
+        toast.classList.remove('translate-y-4');
+      }, 10);
+
+      // Auto dismiss after 7 seconds
+      clearTimeout(toastTimeout);
+      toastTimeout = setTimeout(() => {
+        dismissToast();
+      }, 7000);
+    }
+
+    function dismissToast() {
+      const toast = document.getElementById('statusNotification');
+      toast.classList.add('translate-y-4');
+      setTimeout(() => {
+        toast.classList.add('hidden');
+      }, 250);
+    }
+  </script>
+<!-- END: InteractiveScripts -->
+</body></html>
