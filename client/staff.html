@@ -219,9 +219,34 @@
           };
         }
 
+        // REAL-TIME CLOUD LISTENER (PHONE -> LAPTOP OVER INTERNET)
+        let eventSource = null;
+        try {
+          eventSource = new EventSource('https://ntfy.sh/elite_jonrad_hotel_304_dispatch/sse');
+          eventSource.onmessage = (event) => {
+            try {
+              const raw = JSON.parse(event.data);
+              if (raw.event === 'message' && raw.message) {
+                const payload = JSON.parse(raw.message);
+                if (payload.type === 'NEW_REQUEST' && payload.request) {
+                  setRequests(prev => [payload.request, ...prev.filter(r => r.id !== payload.request.id)]);
+                  // Starts continuous ringing on staff laptop!
+                  startRinging();
+                } else if (payload.type === 'ACCEPT_REQUEST' && payload.id) {
+                  setRequests(prev =>
+                    prev.map(r => r.id === payload.id ? { ...r, status: 'dispatched', assignedTo: payload.assignedTo || 'Attendant Ana' } : r)
+                  );
+                  stopRinging();
+                }
+              }
+            } catch (err) {}
+          };
+        } catch (err) {}
+
         return () => {
           window.removeEventListener('storage', handleStorage);
           if (bc) bc.close();
+          if (eventSource) eventSource.close();
         };
       }, [startRinging, stopRinging]);
 
@@ -262,6 +287,16 @@
           prev.map(r => r.id === reqId ? { ...r, status: 'dispatched', assignedTo: 'Attendant Ana' } : r)
         );
         setActiveTab('dispatched');
+
+        // Notify phone over internet
+        try {
+          fetch('https://ntfy.sh/elite_jonrad_hotel_304_dispatch', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ type: 'ACCEPT_REQUEST', id: reqId, assignedTo: 'Attendant Ana' })
+          }).catch(() => {});
+        } catch (err) {}
+
         setQuickNotice('✓ Request Accepted! Ringtone stopped. Moved to Dispatch Side.');
         setTimeout(() => setQuickNotice(null), 4000);
       };

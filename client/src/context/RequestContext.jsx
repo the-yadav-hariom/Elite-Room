@@ -1,6 +1,8 @@
-import React, { createContext, useContext, useState, useEffect, useCallback } from 'react';
+import React, { createContext, useContext, useState, useEffect, useCallback, useRef } from 'react';
 
 const RequestContext = createContext();
+
+const CLOUD_SYNC_URL = 'https://ntfy.sh/elite_jonrad_hotel_304_dispatch';
 
 const INITIAL_REQUESTS = [
   {
@@ -13,7 +15,7 @@ const INITIAL_REQUESTS = [
     category: 'Housekeeping',
     department: 'Housekeeping Desk',
     urgency: 'high',
-    status: 'pending', // 'pending' | 'dispatched' | 'completed'
+    status: 'pending',
     timestamp: new Date(Date.now() - 1000 * 60 * 2).toISOString(),
     assignedTo: 'Attendant Ana',
     notes: 'In-room chime rung via luxury concierge tablet.',
@@ -96,11 +98,10 @@ export function RequestProvider({ children }) {
     return INITIAL_REQUESTS;
   });
 
-  // Flag to tell staff page whether an incoming call is ringing
   const [isStaffRinging, setIsStaffRinging] = useState(false);
   const [latestRingingRequest, setLatestRingingRequest] = useState(null);
 
-  // Sync state to localStorage for cross-tab communication
+  // Sync state to localStorage for local cross-tab communication
   useEffect(() => {
     try {
       localStorage.setItem('elite_jonrad_requests', JSON.stringify(requests));
@@ -109,16 +110,54 @@ export function RequestProvider({ children }) {
     }
   }, [requests]);
 
-  // Listen to cross-tab updates between guest page and staff page
+  // ================= CLOUD REAL-TIME SYNCHRONIZATION (PHONE <-> LAPTOP) =================
   useEffect(() => {
+    let eventSource = null;
+
+    try {
+      eventSource = new EventSource(`${CLOUD_SYNC_URL}/sse`);
+      
+      eventSource.onmessage = (event) => {
+        try {
+          const raw = JSON.parse(event.data);
+          if (raw.event === 'message' && raw.message) {
+            const payload = JSON.parse(raw.message);
+
+            if (payload.type === 'NEW_REQUEST' && payload.request) {
+              setRequests(prev => {
+                if (prev.some(r => r.id === payload.request.id)) return prev;
+                return [payload.request, ...prev];
+              });
+              // Triggers continuous ringing on staff dashboard!
+              setIsStaffRinging(true);
+              setLatestRingingRequest(payload.request);
+            } else if (payload.type === 'ACCEPT_REQUEST' && payload.id) {
+              setRequests(prev =>
+                prev.map(r => r.id === payload.id ? { ...r, status: 'dispatched', assignedTo: payload.assignedTo || 'Attendant Ana' } : r)
+              );
+              setIsStaffRinging(false);
+              setLatestRingingRequest(null);
+            } else if (payload.type === 'COMPLETE_REQUEST' && payload.id) {
+              setRequests(prev =>
+                prev.map(r => r.id === payload.id ? { ...r, status: 'completed' } : r)
+              );
+            }
+          }
+        } catch (e) {
+          // Non-JSON message from broker, safe to ignore
+        }
+      };
+    } catch (err) {
+      console.warn('Cloud EventSource initialization:', err);
+    }
+
+    // Local tab storage event listener
     const handleStorage = (e) => {
       if (e.key === 'elite_jonrad_requests' && e.newValue) {
         try {
           const parsed = JSON.parse(e.newValue);
           setRequests(parsed);
-        } catch (err) {
-          console.warn('Storage parse error', err);
-        }
+        } catch (err) {}
       }
       if (e.key === 'elite_jonrad_staff_ringing') {
         if (e.newValue === 'true') {
@@ -130,12 +169,29 @@ export function RequestProvider({ children }) {
       }
     };
     window.addEventListener('storage', handleStorage);
-    return () => window.removeEventListener('storage', handleStorage);
+
+    return () => {
+      if (eventSource) eventSource.close();
+      window.removeEventListener('storage', handleStorage);
+    };
   }, []);
 
-  // When a guest clicks a button from the guest room side:
-  // ABSOLUTELY NO AUDIO IS PLAYED HERE!
-  // Only sets state and notifies localStorage so the STAFF terminal rings!
+  // Dispatch cloud message helper
+  const sendCloudBroadcast = async (payload) => {
+    try {
+      await fetch(CLOUD_SYNC_URL, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload)
+      });
+    } catch (err) {
+      console.warn('Cloud broadcast notification notice:', err);
+    }
+  };
+
+  // When a guest clicks a button from the phone / guest room side:
+  // ABSOLUTELY NO AUDIO IS PLAYED HERE ON GUEST SIDE!
+  // Transmits via Cloud SSE to the staff laptop instantly over internet!
   const addGuestRequest = (serviceItem, category, department, room = '304', notes = '') => {
     const newReq = {
       id: `req-${Date.now()}`,
@@ -155,10 +211,14 @@ export function RequestProvider({ children }) {
     };
 
     setRequests(prev => [newReq, ...prev]);
-    setIsStaffRinging(true);
-    setLatestRingingRequest(newReq);
 
-    // Notify staff tab through localStorage (no sound on guest side!)
+    // 1. Broadcast over internet (reaches laptop anywhere!)
+    sendCloudBroadcast({
+      type: 'NEW_REQUEST',
+      request: newReq
+    });
+
+    // 2. Broadcast to local tabs
     try {
       localStorage.setItem('elite_jonrad_staff_ringing', 'true');
     } catch (e) {}
@@ -166,11 +226,20 @@ export function RequestProvider({ children }) {
     return newReq;
   };
 
-  // When staff accepts the request:
-  // Closes ringing and moves to dispatched side
+  // When staff accepts the request on the laptop:
+  // 1. Closes continuous ringing immediately
+  // 2. Moves request to dispatched board
+  // 3. Notifies phone over the internet
   const acceptRequest = (id, attendantName = 'Attendant Ana') => {
     setIsStaffRinging(false);
     setLatestRingingRequest(null);
+
+    // Broadcast accept event over internet
+    sendCloudBroadcast({
+      type: 'ACCEPT_REQUEST',
+      id,
+      assignedTo: attendantName
+    });
 
     try {
       localStorage.setItem('elite_jonrad_staff_ringing', 'false');
@@ -202,6 +271,9 @@ export function RequestProvider({ children }) {
   const updateRequestStatus = (id, newStatus, assignedTo) => {
     if (newStatus === 'dispatched' || newStatus === 'completed') {
       stopStaffRinging();
+    }
+    if (newStatus === 'completed') {
+      sendCloudBroadcast({ type: 'COMPLETE_REQUEST', id });
     }
     setRequests(prev =>
       prev.map(item => {

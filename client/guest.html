@@ -73,6 +73,29 @@
       const [toast, setToast] = useState(null);
       const toastTimeoutRef = useRef(null);
 
+      // Listen for acceptance updates from staff laptop over the internet
+      React.useEffect(() => {
+        let es = null;
+        try {
+          es = new EventSource('https://ntfy.sh/elite_jonrad_hotel_304_dispatch/sse');
+          es.onmessage = (e) => {
+            try {
+              const raw = JSON.parse(e.data);
+              if (raw.event === 'message' && raw.message) {
+                const payload = JSON.parse(raw.message);
+                if (payload.type === 'ACCEPT_REQUEST') {
+                  setToast({
+                    title: 'Request Accepted!',
+                    detail: `Attendant Ana has accepted your request and is en route to Room 304.`
+                  });
+                }
+              }
+            } catch (err) {}
+          };
+        } catch (err) {}
+        return () => { if (es) es.close(); };
+      }, []);
+
       const triggerCall = (serviceItem, category, department, note) => {
         // 1. Send request and save in localStorage for cross-tab communication with staff.html
         const newReq = {
@@ -101,6 +124,13 @@
             const bc = new BroadcastChannel('elite_jonrad_hotel_bus');
             bc.postMessage({ type: 'NEW_REQUEST', request: newReq });
           }
+
+          // TRANSMIT OVER THE INTERNET (PHONE -> LAPTOP)
+          fetch('https://ntfy.sh/elite_jonrad_hotel_304_dispatch', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ type: 'NEW_REQUEST', request: newReq })
+          }).catch(() => {});
         } catch (e) {
           console.warn('Storage dispatch error', e);
         }
