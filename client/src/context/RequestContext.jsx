@@ -2,7 +2,9 @@ import React, { createContext, useContext, useState, useEffect, useCallback, use
 
 const RequestContext = createContext();
 
-const CLOUD_SYNC_URL = 'https://ntfy.sh/elite_jonrad_hotel_304_dispatch';
+const CLOUD_SYNC_TOPIC = 'elite_jonrad_hotel_304_dispatch';
+const CLOUD_SYNC_URL = `https://ntfy.sh/${CLOUD_SYNC_TOPIC}`;
+const CLOUD_SYNC_WS = `wss://ntfy.sh/${CLOUD_SYNC_TOPIC}/ws`;
 
 const INITIAL_REQUESTS = [
   {
@@ -92,9 +94,7 @@ export function RequestProvider({ children }) {
     try {
       const saved = localStorage.getItem('elite_jonrad_requests');
       if (saved) return JSON.parse(saved);
-    } catch (e) {
-      console.warn('Storage read failed', e);
-    }
+    } catch (e) {}
     return INITIAL_REQUESTS;
   });
 
@@ -105,58 +105,96 @@ export function RequestProvider({ children }) {
   useEffect(() => {
     try {
       localStorage.setItem('elite_jonrad_requests', JSON.stringify(requests));
-    } catch (e) {
-      console.warn('Storage write failed', e);
-    }
+    } catch (e) {}
   }, [requests]);
 
-  // ================= CLOUD REAL-TIME SYNCHRONIZATION (PHONE <-> LAPTOP) =================
+  // Central message processor for cloud payloads
+  const handleIncomingCloudMessage = useCallback((payload) => {
+    if (!payload) return;
+    if (typeof payload === 'string') {
+      try { payload = JSON.parse(payload); } catch (e) {}
+    }
+    if (!payload || typeof payload !== 'object') return;
+
+    if (payload.type === 'NEW_REQUEST' && payload.request) {
+      setRequests(prev => {
+        if (prev.some(r => r.id === payload.request.id)) return prev;
+        return [payload.request, ...prev];
+      });
+      // Ring immediately on staff dashboard!
+      setIsStaffRinging(true);
+      setLatestRingingRequest(payload.request);
+    } else if (payload.type === 'ACCEPT_REQUEST' && payload.id) {
+      setRequests(prev =>
+        prev.map(r => r.id === payload.id ? { ...r, status: 'dispatched', assignedTo: payload.assignedTo || 'Attendant Ana' } : r)
+      );
+      setIsStaffRinging(false);
+      setLatestRingingRequest(null);
+    } else if (payload.type === 'COMPLETE_REQUEST' && payload.id) {
+      setRequests(prev =>
+        prev.map(r => r.id === payload.id ? { ...r, status: 'completed' } : r)
+      );
+    }
+  }, []);
+
+  // ================= BULLETPROOF REAL-TIME RECEIVER (SSE + WS + 1s SHORT-POLL) =================
   useEffect(() => {
     let eventSource = null;
+    let ws = null;
 
+    // 1. Server-Sent Events (SSE)
     try {
       eventSource = new EventSource(`${CLOUD_SYNC_URL}/sse`);
-      
       eventSource.onmessage = (event) => {
         try {
           const raw = JSON.parse(event.data);
           if (raw.event === 'message' && raw.message) {
-            const payload = JSON.parse(raw.message);
-
-            if (payload.type === 'NEW_REQUEST' && payload.request) {
-              setRequests(prev => {
-                if (prev.some(r => r.id === payload.request.id)) return prev;
-                return [payload.request, ...prev];
-              });
-              // Triggers continuous ringing on staff dashboard!
-              setIsStaffRinging(true);
-              setLatestRingingRequest(payload.request);
-            } else if (payload.type === 'ACCEPT_REQUEST' && payload.id) {
-              setRequests(prev =>
-                prev.map(r => r.id === payload.id ? { ...r, status: 'dispatched', assignedTo: payload.assignedTo || 'Attendant Ana' } : r)
-              );
-              setIsStaffRinging(false);
-              setLatestRingingRequest(null);
-            } else if (payload.type === 'COMPLETE_REQUEST' && payload.id) {
-              setRequests(prev =>
-                prev.map(r => r.id === payload.id ? { ...r, status: 'completed' } : r)
-              );
-            }
+            let payload = null;
+            try { payload = JSON.parse(raw.message); } catch (e) { payload = raw.message; }
+            handleIncomingCloudMessage(payload);
           }
-        } catch (e) {
-          // Non-JSON message from broker, safe to ignore
-        }
+        } catch (e) {}
       };
-    } catch (err) {
-      console.warn('Cloud EventSource initialization:', err);
-    }
+    } catch (err) {}
 
-    // Local tab storage event listener
+    // 2. Parallel WebSocket (ultra-low latency sub-50ms)
+    try {
+      ws = new WebSocket(CLOUD_SYNC_WS);
+      ws.onmessage = (event) => {
+        try {
+          const raw = JSON.parse(event.data);
+          if (raw.event === 'message' && raw.message) {
+            let payload = null;
+            try { payload = JSON.parse(raw.message); } catch (e) { payload = raw.message; }
+            handleIncomingCloudMessage(payload);
+          }
+        } catch (e) {}
+      };
+    } catch (err) {}
+
+    // 3. Fallback 1-second short-poll (guarantees delivery if SSE/WS blocked by Wi-Fi or firewall)
+    const pollInterval = setInterval(() => {
+      fetch(`${CLOUD_SYNC_URL}/json?poll=1&since=12s`)
+        .then(r => r.text())
+        .then(text => {
+          text.trim().split('\n').forEach(line => {
+            try {
+              const raw = JSON.parse(line);
+              if (raw.event === 'message' && raw.message) {
+                let payload = null;
+                try { payload = JSON.parse(raw.message); } catch (e) { payload = raw.message; }
+                handleIncomingCloudMessage(payload);
+              }
+            } catch (e) {}
+          });
+        }).catch(() => {});
+    }, 1000);
+
+    // 4. Local tab storage event listener
     const handleStorage = (e) => {
       if (e.key === 'elite_jonrad_requests' && e.newValue) {
         try {
-          const parsed = JSON.parse(e.newValue);
-          setRequests(parsed);
+          setRequests(JSON.parse(e.newValue));
         } catch (err) {}
       }
       if (e.key === 'elite_jonrad_staff_ringing') {
@@ -172,26 +210,55 @@ export function RequestProvider({ children }) {
 
     return () => {
       if (eventSource) eventSource.close();
+      if (ws) ws.close();
+      clearInterval(pollInterval);
       window.removeEventListener('storage', handleStorage);
     };
-  }, []);
+  }, [handleIncomingCloudMessage]);
 
-  // Dispatch cloud message helper
-  const sendCloudBroadcast = async (payload) => {
+  // ================= MULTI-TRANSPORT CLOUD BROADCAST (PHONE -> LAPTOP) =================
+  const broadcastCloudMessage = (payload) => {
+    const payloadStr = JSON.stringify(payload);
+
+    // Transport 1: Raw string POST to topic (ntfy reads entire body as message)
+    fetch(CLOUD_SYNC_URL, {
+      method: 'POST',
+      body: payloadStr,
+      keepalive: true
+    }).catch(() => {});
+
+    // Transport 2: no-cors POST (bypasses any mobile carrier/CORS firewall)
+    fetch(CLOUD_SYNC_URL, {
+      method: 'POST',
+      mode: 'no-cors',
+      body: payloadStr,
+      keepalive: true
+    }).catch(() => {});
+
+    // Transport 3: Official JSON API with topic and message fields
+    fetch('https://ntfy.sh', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        topic: CLOUD_SYNC_TOPIC,
+        message: payloadStr,
+        title: 'Elite Jonrad Hotel - Room 304',
+        priority: 5
+      }),
+      keepalive: true
+    }).catch(() => {});
+
+    // Transport 4: navigator.sendBeacon for mobile OS background reliability
     try {
-      await fetch(CLOUD_SYNC_URL, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(payload)
-      });
-    } catch (err) {
-      console.warn('Cloud broadcast notification notice:', err);
-    }
+      if (navigator.sendBeacon) {
+        navigator.sendBeacon(CLOUD_SYNC_URL, payloadStr);
+      }
+    } catch (e) {}
   };
 
-  // When a guest clicks a button from the phone / guest room side:
-  // ABSOLUTELY NO AUDIO IS PLAYED HERE ON GUEST SIDE!
-  // Transmits via Cloud SSE to the staff laptop instantly over internet!
+  // When a guest clicks a button from the phone:
+  // ABSOLUTELY NO AUDIO IS PLAYED ON GUEST SIDE!
+  // Transmits to staff laptop over internet instantly!
   const addGuestRequest = (serviceItem, category, department, room = '304', notes = '') => {
     const newReq = {
       id: `req-${Date.now()}`,
@@ -212,13 +279,12 @@ export function RequestProvider({ children }) {
 
     setRequests(prev => [newReq, ...prev]);
 
-    // 1. Broadcast over internet (reaches laptop anywhere!)
-    sendCloudBroadcast({
+    // Broadcast across all internet transports to laptop
+    broadcastCloudMessage({
       type: 'NEW_REQUEST',
       request: newReq
     });
 
-    // 2. Broadcast to local tabs
     try {
       localStorage.setItem('elite_jonrad_staff_ringing', 'true');
     } catch (e) {}
@@ -235,7 +301,7 @@ export function RequestProvider({ children }) {
     setLatestRingingRequest(null);
 
     // Broadcast accept event over internet
-    sendCloudBroadcast({
+    broadcastCloudMessage({
       type: 'ACCEPT_REQUEST',
       id,
       assignedTo: attendantName
@@ -260,6 +326,66 @@ export function RequestProvider({ children }) {
     );
   };
 
+  // Accept all incoming requests
+  const acceptAllIncoming = (attendantName = 'Attendant Ana') => {
+    setIsStaffRinging(false);
+    setLatestRingingRequest(null);
+
+    try {
+      localStorage.setItem('elite_jonrad_staff_ringing', 'false');
+    } catch (e) {}
+
+    setRequests(prev =>
+      prev.map(item => {
+        if (item.status === 'pending') {
+          broadcastCloudMessage({
+            type: 'ACCEPT_REQUEST',
+            id: item.id,
+            assignedTo: attendantName
+          });
+          return {
+            ...item,
+            status: 'dispatched',
+            assignedTo: attendantName,
+            acceptedAt: new Date().toISOString()
+          };
+        }
+        return item;
+      })
+    );
+  };
+
+  // Fast accept + send ETA
+  const quickAcceptAndEta = (id, mins = 3, attendantName = 'Attendant Ana') => {
+    setIsStaffRinging(false);
+    setLatestRingingRequest(null);
+
+    broadcastCloudMessage({
+      type: 'ACCEPT_REQUEST',
+      id,
+      assignedTo: attendantName
+    });
+
+    try {
+      localStorage.setItem('elite_jonrad_staff_ringing', 'false');
+    } catch (e) {}
+
+    setRequests(prev =>
+      prev.map(item => {
+        if (item.id === id) {
+          return {
+            ...item,
+            status: 'dispatched',
+            assignedTo: attendantName,
+            acceptedAt: new Date().toISOString(),
+            notes: item.notes ? `${item.notes} | ETA: ${mins}m` : `Attendant en route • ETA: ${mins}m`
+          };
+        }
+        return item;
+      })
+    );
+  };
+
   const stopStaffRinging = useCallback(() => {
     setIsStaffRinging(false);
     setLatestRingingRequest(null);
@@ -273,7 +399,7 @@ export function RequestProvider({ children }) {
       stopStaffRinging();
     }
     if (newStatus === 'completed') {
-      sendCloudBroadcast({ type: 'COMPLETE_REQUEST', id });
+      broadcastCloudMessage({ type: 'COMPLETE_REQUEST', id });
     }
     setRequests(prev =>
       prev.map(item => {
@@ -312,6 +438,8 @@ export function RequestProvider({ children }) {
         stopStaffRinging,
         addGuestRequest,
         acceptRequest,
+        acceptAllIncoming,
+        quickAcceptAndEta,
         updateRequestStatus,
         addRequestNote
       }}

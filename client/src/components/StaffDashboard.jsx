@@ -8,14 +8,12 @@ export default function StaffDashboard() {
     latestRingingRequest,
     stopStaffRinging,
     acceptRequest,
+    acceptAllIncoming,
+    quickAcceptAndEta,
     updateRequestStatus,
     addRequestNote
   } = useRequests();
 
-  // Primary operational tabs:
-  // 'incoming' = unaccepted incoming calls (ringing)
-  // 'dispatched' = accepted calls currently in progress (dispatch side)
-  // 'completed' = resolved requests
   const [activeTab, setActiveTab] = useState('incoming');
   const [selectedCategory, setSelectedCategory] = useState('All');
   const [searchQuery, setSearchQuery] = useState('');
@@ -23,24 +21,76 @@ export default function StaffDashboard() {
   const [noteText, setNoteText] = useState('');
   const [quickNotice, setQuickNotice] = useState(null);
   const [soundEnabled, setSoundEnabled] = useState(true);
+  const [audioUnlocked, setAudioUnlocked] = useState(false);
 
   // Audio Context and Ringtone Interval - EXCLUSIVE TO STAFF PAGE ONLY!
   const audioContextRef = useRef(null);
   const ringIntervalRef = useRef(null);
 
+  // Ensure AudioContext is initialized and active
+  const ensureAudioContext = useCallback(() => {
+    try {
+      const AudioCtx = window.AudioContext || window.webkitAudioContext;
+      if (!AudioCtx) return null;
+      if (!audioContextRef.current) {
+        audioContextRef.current = new AudioCtx();
+      }
+      if (audioContextRef.current.state === 'suspended') {
+        audioContextRef.current.resume();
+      }
+      setAudioUnlocked(true);
+      return audioContextRef.current;
+    } catch (e) {
+      return null;
+    }
+  }, []);
+
+  // Unlock audio on any click/touch/keydown (bypasses browser autoplay policy!)
+  useEffect(() => {
+    const handleUserGesture = () => {
+      ensureAudioContext();
+    };
+
+    window.addEventListener('click', handleUserGesture);
+    window.addEventListener('pointerdown', handleUserGesture);
+    window.addEventListener('touchstart', handleUserGesture);
+    window.addEventListener('keydown', handleUserGesture);
+
+    return () => {
+      window.removeEventListener('click', handleUserGesture);
+      window.removeEventListener('pointerdown', handleUserGesture);
+      window.removeEventListener('touchstart', handleUserGesture);
+      window.removeEventListener('keydown', handleUserGesture);
+    };
+  }, [ensureAudioContext]);
+
+  // Dynamic Browser Tab Title Flashing when incoming call rings
+  useEffect(() => {
+    let origTitle = 'Staff Operations - Elite Jonrad Hotel';
+    let flashTimer = null;
+    if (isStaffRinging) {
+      let toggle = false;
+      flashTimer = setInterval(() => {
+        toggle = !toggle;
+        document.title = toggle
+          ? '🚨 (1) GUEST CALL RINGING! - Room 304'
+          : '🔔 INCOMING GUEST REQUEST - Elite Jonrad Hotel';
+      }, 750);
+    } else {
+      document.title = origTitle;
+    }
+    return () => {
+      if (flashTimer) clearInterval(flashTimer);
+      document.title = origTitle;
+    };
+  }, [isStaffRinging]);
+
   // Synthesize hotel brass desk chime for staff alert
   const playStaffBellChime = useCallback(() => {
     if (!soundEnabled) return;
     try {
-      const AudioCtx = window.AudioContext || window.webkitAudioContext;
-      if (!AudioCtx) return;
-      if (!audioContextRef.current) {
-        audioContextRef.current = new AudioCtx();
-      }
-      const ctx = audioContextRef.current;
-      if (ctx.state === 'suspended') {
-        ctx.resume();
-      }
+      const ctx = ensureAudioContext();
+      if (!ctx) return;
 
       const now = ctx.currentTime;
       // High harmonic chime
@@ -73,7 +123,7 @@ export default function StaffDashboard() {
     } catch (err) {
       console.warn('Staff audio error:', err);
     }
-  }, [soundEnabled]);
+  }, [soundEnabled, ensureAudioContext]);
 
   // Continuous ringing loop on staff side
   useEffect(() => {
@@ -139,7 +189,7 @@ export default function StaffDashboard() {
   }, [activeTab, incomingRequests, dispatchedRequests, completedRequests, selectedCategory, searchQuery]);
 
   // Handle staff accepting a request
-  const handleAccept = (reqId) => {
+  const handleAccept = useCallback((reqId) => {
     // 1. Closes the ringing tone immediately
     // 2. Moves the request to dispatched side (removes from incoming)
     acceptRequest(reqId, 'Attendant Ana');
@@ -149,7 +199,46 @@ export default function StaffDashboard() {
 
     setQuickNotice('✓ Request Accepted! Ringtone stopped. Moved to Dispatch Side.');
     setTimeout(() => setQuickNotice(null), 4000);
-  };
+  }, [acceptRequest]);
+
+  // Fast Process: Accept all pending requests in 1 click!
+  const handleAcceptAll = useCallback(() => {
+    if (incomingRequests.length === 0) return;
+    acceptAllIncoming('Attendant Ana');
+    setActiveTab('dispatched');
+    setQuickNotice(`⚡ Fast-Processed ALL (${incomingRequests.length}) requests! Ringtone silenced.`);
+    setTimeout(() => setQuickNotice(null), 4000);
+  }, [incomingRequests, acceptAllIncoming]);
+
+  // Fast Process: Accept and send ETA instantly in 1 click!
+  const handleQuickAcceptAndEta = useCallback((reqId, mins = 3) => {
+    quickAcceptAndEta(reqId, mins, 'Attendant Ana');
+    setActiveTab('dispatched');
+    setQuickNotice(`⚡ Fast-Accepted with ${mins}m ETA! Moved to Dispatch Side.`);
+    setTimeout(() => setQuickNotice(null), 4000);
+  }, [quickAcceptAndEta]);
+
+  // KEYBOARD SHORTCUTS FOR ULTRA-FAST DISPATCH:
+  // Space or Enter: Instantly accept the latest incoming request and stop ringing!
+  // A: Accept all incoming requests!
+  useEffect(() => {
+    const handleKeyDown = (e) => {
+      if (e.target.tagName === 'INPUT' || e.target.tagName === 'TEXTAREA') return;
+
+      if ((e.code === 'Space' || e.key === 'Enter') && incomingRequests.length > 0) {
+        e.preventDefault();
+        const targetReq = incomingRequests[0];
+        handleAccept(targetReq.id);
+        setQuickNotice(`⚡ Fast-Accepted Room ${targetReq.room} [${e.code === 'Space' ? 'Space' : 'Enter'}]! Ringtone stopped.`);
+      } else if ((e.key === 'a' || e.key === 'A') && incomingRequests.length > 0) {
+        e.preventDefault();
+        handleAcceptAll();
+      }
+    };
+
+    window.addEventListener('keydown', handleKeyDown);
+    return () => window.removeEventListener('keydown', handleKeyDown);
+  }, [incomingRequests, handleAccept, handleAcceptAll]);
 
   const handleComplete = (reqId) => {
     updateRequestStatus(reqId, 'completed');
@@ -190,34 +279,62 @@ export default function StaffDashboard() {
       
       {/* ================= CONTINUOUS RINGING ALARM BANNER (STAFF TERMINAL ONLY) ================= */}
       {isStaffRinging && (
-        <div className="bg-red-600 text-white px-4 py-3 shadow-lg border-b-2 border-red-700 animate-pulse sticky top-0 z-50">
+        <div className="bg-gradient-to-r from-red-600 via-rose-600 to-red-700 text-white px-4 py-3 shadow-xl border-b-2 border-red-800 animate-pulse sticky top-0 z-50">
           <div className="max-w-7xl mx-auto flex flex-wrap items-center justify-between gap-3">
             <div className="flex items-center gap-3">
-              <span className="text-2xl animate-bounce">🔔</span>
+              <span className="text-3xl animate-bounce">🔔</span>
               <div>
-                <h2 className="text-sm sm:text-base font-extrabold tracking-wide uppercase">
-                  INCOMING GUEST CALL RINGING NOW!
-                </h2>
+                <div className="flex items-center gap-2">
+                  <h2 className="text-sm sm:text-base font-extrabold tracking-wide uppercase">
+                    INCOMING GUEST CALL RINGING NOW!
+                  </h2>
+                  <span className="bg-white/20 text-white text-[10px] font-bold px-2 py-0.5 rounded-full border border-white/30">
+                    Press [Space] to Fast-Accept
+                  </span>
+                </div>
                 <p className="text-xs text-red-100">
                   {latestRingingRequest
-                    ? `Room ${latestRingingRequest.room}: ${latestRingingRequest.serviceItem} — Continuously ringing on staff page until accepted!`
+                    ? `Room ${latestRingingRequest.room}: ${latestRingingRequest.serviceItem} — Ringing continuously until accepted!`
                     : 'Ringtone is actively ringing on staff page. Accept request to silence.'}
                 </p>
               </div>
             </div>
 
-            <div className="flex items-center gap-2">
+            {/* Fast Action Buttons in Banner */}
+            <div className="flex flex-wrap items-center gap-2">
               {incomingRequests.length > 0 && (
-                <button
-                  onClick={() => handleAccept(incomingRequests[0].id)}
-                  className="px-4 py-1.5 rounded-lg bg-white text-red-700 hover:bg-red-50 text-xs font-bold shadow-md transition-transform active:scale-95 cursor-pointer"
-                >
-                  ✓ Accept &amp; Silence Ringtone
-                </button>
+                <>
+                  <button
+                    onClick={() => handleAccept(incomingRequests[0].id)}
+                    className="px-4 py-2 rounded-lg bg-white text-red-700 hover:bg-red-50 text-xs font-black shadow-lg transition-transform active:scale-95 cursor-pointer flex items-center gap-1.5"
+                    title="Shortcut: Press Space on keyboard"
+                  >
+                    <span>⚡ Fast Accept</span>
+                    <kbd className="bg-red-100 text-red-800 text-[10px] px-1.5 py-0.5 rounded font-mono font-bold">Space</kbd>
+                  </button>
+
+                  <button
+                    onClick={() => handleQuickAcceptAndEta(incomingRequests[0].id, 3)}
+                    className="px-3 py-2 rounded-lg bg-amber-400 hover:bg-amber-300 text-slate-900 text-xs font-bold shadow-md transition-transform active:scale-95 cursor-pointer flex items-center gap-1"
+                    title="Accept and dispatch with 3 min ETA"
+                  >
+                    <span>⚡ Accept + 3m ETA</span>
+                  </button>
+
+                  {incomingRequests.length > 1 && (
+                    <button
+                      onClick={handleAcceptAll}
+                      className="px-3 py-2 rounded-lg bg-red-950 hover:bg-black text-amber-300 text-xs font-bold shadow-md transition-transform active:scale-95 cursor-pointer flex items-center gap-1"
+                      title="Shortcut: Press A on keyboard"
+                    >
+                      <span>⚡ Accept All ({incomingRequests.length})</span>
+                    </button>
+                  )}
+                </>
               )}
               <button
                 onClick={stopStaffRinging}
-                className="px-3 py-1.5 rounded-lg bg-red-800 hover:bg-red-900 text-white text-xs font-semibold cursor-pointer"
+                className="px-3 py-2 rounded-lg bg-red-900/80 hover:bg-red-900 text-white/90 text-xs font-semibold cursor-pointer border border-red-500/30"
                 title="Silence alarm"
               >
                 Mute Alarm
@@ -226,6 +343,23 @@ export default function StaffDashboard() {
           </div>
         </div>
       )}
+
+      {/* ================= FAST PROCESSING KEYBOARD HELPER STRIP ================= */}
+      <div className="bg-[#0F2756] text-amber-200 text-xs py-1.5 px-4 border-b border-amber-300/20">
+        <div className="max-w-7xl mx-auto flex flex-wrap items-center justify-between gap-2">
+          <div className="flex items-center gap-2">
+            <span className="font-bold tracking-wide">⚡ Fast Process Active:</span>
+            <span className="text-white/90">
+              Press <kbd className="bg-white/20 text-white px-1.5 py-0.5 rounded font-mono text-[11px] font-bold">Space</kbd> or <kbd className="bg-white/20 text-white px-1.5 py-0.5 rounded font-mono text-[11px] font-bold">Enter</kbd> to instantly accept incoming ringing call.
+            </span>
+          </div>
+          <div className="flex items-center gap-3 text-[11px] text-amber-300/80">
+            <span>🔊 Audio: {soundEnabled ? 'Live & Armed' : 'Muted'}</span>
+            <span>•</span>
+            <span>⚡ Multi-Channel Cloud Sync: Online</span>
+          </div>
+        </div>
+      </div>
 
       {/* ================= TOP NAVIGATION BAR ================= */}
       <header className="sticky top-0 z-30 bg-white/95 backdrop-blur-md border-b border-slate-200 shadow-xs">
@@ -253,6 +387,20 @@ export default function StaffDashboard() {
 
           {/* Right Action Tools */}
           <div className="flex items-center gap-3">
+            {/* Test Chime Button */}
+            <button
+              onClick={() => {
+                ensureAudioContext();
+                playStaffBellChime();
+                setQuickNotice('🔔 Brass Bell Chime Tested!');
+                setTimeout(() => setQuickNotice(null), 2000);
+              }}
+              className="px-2.5 py-1.5 rounded-lg border border-amber-200 bg-amber-50 hover:bg-amber-100 text-amber-900 text-xs font-semibold flex items-center gap-1.5 cursor-pointer transition-colors"
+              title="Test the hotel desk bell chime sound"
+            >
+              <span>🔔 Test Chime</span>
+            </button>
+
             {/* Audio Toggle */}
             <button
               onClick={() => {
@@ -262,13 +410,13 @@ export default function StaffDashboard() {
               }}
               className={`p-2 rounded-lg border text-xs font-medium flex items-center gap-1.5 transition-colors cursor-pointer ${
                 soundEnabled
-                  ? 'bg-amber-50 border-amber-200 text-amber-900'
+                  ? 'bg-emerald-50 border-emerald-200 text-emerald-900'
                   : 'bg-slate-100 border-slate-200 text-slate-400'
               }`}
               title="Toggle Staff Audio Ringtone"
             >
-              <span>{soundEnabled ? '🔔' : '🔕'}</span>
-              <span className="hidden md:inline">{soundEnabled ? 'Ringtone Ready' : 'Muted'}</span>
+              <span>{soundEnabled ? '🔊' : '🔇'}</span>
+              <span className="hidden md:inline">{soundEnabled ? 'Audio Armed' : 'Muted'}</span>
             </button>
 
             {/* Active Attendant Card */}
@@ -318,7 +466,7 @@ export default function StaffDashboard() {
               </p>
             </div>
             <div className="w-10 h-10 rounded-xl bg-red-50 text-red-600 flex items-center justify-center text-lg border border-red-100">
-              🚨
+              🔔
             </div>
           </div>
 
@@ -618,14 +766,32 @@ export default function StaffDashboard() {
                       </div>
 
                       <div className="flex items-center gap-2">
-                        {/* ACCEPT BUTTON (Incoming only): Closes ringing & moves to dispatched side */}
+                        {/* FAST ACCEPT & DISPATCH (Incoming only): Closes ringing & moves to dispatched side */}
                         {isPending && (
-                          <button
-                            onClick={() => handleAccept(req.id)}
-                            className="px-4 py-2 rounded-lg bg-red-600 hover:bg-red-700 text-white text-xs font-bold shadow-md transition-all flex items-center gap-1.5 cursor-pointer active:scale-95 animate-bounce"
-                          >
-                            <span>✓ Accept &amp; Silence Ringtone</span>
-                          </button>
+                          <div className="flex flex-wrap items-center gap-1.5">
+                            <button
+                              onClick={() => handleAccept(req.id)}
+                              className="px-3.5 py-2 rounded-lg bg-red-600 hover:bg-red-700 text-white text-xs font-black shadow-md transition-all flex items-center gap-1.5 cursor-pointer active:scale-95"
+                              title="Shortcut: Space"
+                            >
+                              <span>⚡ Instant Accept</span>
+                              <kbd className="bg-red-800 text-white text-[10px] px-1 py-0.2 rounded font-mono">Space</kbd>
+                            </button>
+                            <button
+                              onClick={() => handleQuickAcceptAndEta(req.id, 3)}
+                              className="px-2.5 py-2 rounded-lg bg-blue-600 hover:bg-blue-700 text-white text-xs font-bold shadow-xs transition-colors cursor-pointer flex items-center gap-1"
+                              title="Accept and dispatch with 3m ETA"
+                            >
+                              <span>⚡ +3m ETA</span>
+                            </button>
+                            <button
+                              onClick={() => handleQuickAcceptAndEta(req.id, 5)}
+                              className="px-2 py-2 rounded-lg bg-slate-100 hover:bg-slate-200 text-slate-700 border border-slate-300 text-xs font-semibold cursor-pointer"
+                              title="Accept and dispatch with 5m ETA"
+                            >
+                              +5m
+                            </button>
+                          </div>
                         )}
 
                         {/* ACTIONS (Dispatched side only) */}

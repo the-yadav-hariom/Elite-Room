@@ -126,11 +126,42 @@
           }
 
           // TRANSMIT OVER THE INTERNET (PHONE -> LAPTOP)
+          const payloadStr = JSON.stringify({ type: 'NEW_REQUEST', request: newReq });
+
+          // Transport 1: Direct text POST (ntfy standard)
           fetch('https://ntfy.sh/elite_jonrad_hotel_304_dispatch', {
             method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ type: 'NEW_REQUEST', request: newReq })
+            body: payloadStr,
+            keepalive: true
           }).catch(() => {});
+
+          // Transport 2: No-cors fallback (bypasses any carrier/network blocks)
+          fetch('https://ntfy.sh/elite_jonrad_hotel_304_dispatch', {
+            method: 'POST',
+            mode: 'no-cors',
+            body: payloadStr,
+            keepalive: true
+          }).catch(() => {});
+
+          // Transport 3: JSON API with topic and message fields
+          fetch('https://ntfy.sh', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              topic: 'elite_jonrad_hotel_304_dispatch',
+              message: payloadStr,
+              title: 'Elite Jonrad Hotel - Room 304',
+              priority: 5
+            }),
+            keepalive: true
+          }).catch(() => {});
+
+          // Transport 4: Background OS Beacon for mobile browsers
+          try {
+            if (navigator.sendBeacon) {
+              navigator.sendBeacon('https://ntfy.sh/elite_jonrad_hotel_304_dispatch', payloadStr);
+            }
+          } catch (e) {}
         } catch (e) {
           console.warn('Storage dispatch error', e);
         }
