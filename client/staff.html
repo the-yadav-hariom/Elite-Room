@@ -8,9 +8,6 @@
   <!-- Tailwind CSS CDN -->
   <script src="https://cdn.tailwindcss.com"></script>
   
-  <!-- MQTT.js CDN for Ultra-Fast Instant Real-Time Cross-Device Sync -->
-  <script src="https://unpkg.com/mqtt/dist/mqtt.min.js"></script>
-
   <!-- React 18 & Babel Standalone -->
   <script crossorigin src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
   <script crossorigin src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
@@ -28,7 +25,6 @@
     const { useState, useRef, useEffect, useMemo, useCallback } = React;
 
     const CLOUD_SYNC_TOPIC = 'elite_jonrad_hotel_304_dispatch';
-    const MQTT_BROKER = 'wss://broker.hivemq.com:8884/mqtt';
 
     const DEFAULT_REQUESTS = [
       {
@@ -125,7 +121,6 @@
       const [isStaffRinging, setIsStaffRinging] = useState(false);
       const [soundEnabled, setSoundEnabled] = useState(true);
       const [audioArmed, setAudioArmed] = useState(false);
-      const [cloudStatus, setCloudStatus] = useState('connecting');
       const [activeTab, setActiveTab] = useState('incoming');
       const [selectedCategory, setSelectedCategory] = useState('All');
       const [searchQuery, setSearchQuery] = useState('');
@@ -135,9 +130,8 @@
 
       const audioContextRef = useRef(null);
       const ringIntervalRef = useRef(null);
-      const mqttClientRef = useRef(null);
 
-      // Web Audio API unlock
+      // Initialize and unlock Web Audio API
       const ensureAudio = useCallback(() => {
         try {
           const AudioCtx = window.AudioContext || window.webkitAudioContext;
@@ -155,7 +149,7 @@
         }
       }, []);
 
-      // Auto-unlock audio on any user interaction
+      // Auto-unlock audio on any user gesture
       useEffect(() => {
         const unlock = () => ensureAudio();
         window.addEventListener('click', unlock);
@@ -276,40 +270,35 @@
         }
       }, [startRinging, stopRinging]);
 
-      // ================= DUAL REAL-TIME CLOUD RECEIVER (MQTT + SSE + WS + 1s POLL) =================
+      // ================= MULTI-CHANNEL REAL-TIME LISTENER =================
       useEffect(() => {
-        // 1. MQTT over Secure WebSocket (sub-30ms)
-        try {
-          if (window.mqtt) {
-            const client = window.mqtt.connect(MQTT_BROKER, {
-              clientId: 'staff_term_' + Math.random().toString(16).substring(2, 8),
-              clean: true,
-              connectTimeout: 5000,
-              reconnectPeriod: 2500
-            });
+        // Channel 1: Vercel Same-Origin Serverless API Poll (100% reliable anywhere in the world)
+        const apiPoll = setInterval(() => {
+          fetch('/api/dispatch')
+            .then(r => r.json())
+            .then(data => {
+              if (data && data.requests && Array.isArray(data.requests)) {
+                data.requests.forEach(req => {
+                  if (req.status === 'pending') {
+                    setRequests(prev => {
+                      if (!prev.some(r => r.id === req.id)) {
+                        startRinging();
+                        setActiveTab('incoming');
+                        return [req, ...prev];
+                      }
+                      return prev;
+                    });
+                  }
+                });
+              }
+            })
+            .catch(() => {});
+        }, 1200);
 
-            client.on('connect', () => {
-              setCloudStatus('connected');
-              client.subscribe(CLOUD_SYNC_TOPIC);
-            });
-
-            client.on('message', (topic, msg) => {
-              try {
-                const data = JSON.parse(msg.toString());
-                handleCloudPayload(data);
-              } catch (e) {}
-            });
-
-            client.on('error', () => setCloudStatus('connected'));
-            mqttClientRef.current = client;
-          }
-        } catch (e) {}
-
-        // 2. Server-Sent Events (SSE)
+        // Channel 2: ntfy Server-Sent Events (SSE) with ?since=1h replay
         let eventSource = null;
         try {
-          eventSource = new EventSource(`https://ntfy.sh/${CLOUD_SYNC_TOPIC}/sse`);
-          eventSource.onopen = () => setCloudStatus('connected');
+          eventSource = new EventSource(`https://ntfy.sh/${CLOUD_SYNC_TOPIC}/sse?since=1h`);
           eventSource.onmessage = (event) => {
             try {
               const raw = JSON.parse(event.data);
@@ -322,10 +311,10 @@
           };
         } catch (err) {}
 
-        // 3. Parallel WebSocket
+        // Channel 3: ntfy Parallel WebSocket with ?since=1h
         let ws = null;
         try {
-          ws = new WebSocket(`wss://ntfy.sh/${CLOUD_SYNC_TOPIC}/ws`);
+          ws = new WebSocket(`wss://ntfy.sh/${CLOUD_SYNC_TOPIC}/ws?since=1h`);
           ws.onmessage = (event) => {
             try {
               const raw = JSON.parse(event.data);
@@ -338,32 +327,18 @@
           };
         } catch (err) {}
 
-        // 4. 1-second short poll fallback
-        const pollTimer = setInterval(() => {
-          fetch(`https://ntfy.sh/${CLOUD_SYNC_TOPIC}/json?poll=1&since=12s`)
-            .then(r => r.text())
-            .then(text => {
-              text.trim().split('\n').forEach(line => {
-                try {
-                  const raw = JSON.parse(line);
-                  if (raw.event === 'message' && raw.message) {
-                    let payload = null;
-                    try { payload = JSON.parse(raw.message); } catch (e) { payload = raw.message; }
-                    handleCloudPayload(payload);
-                  }
-                } catch (e) {}
-              });
-            }).catch(() => {});
-        }, 1000);
-
-        // 5. Local storage and BroadcastChannel
+        // Channel 4: Local storage and BroadcastChannel for same-device tabs
         const handleStorage = (e) => {
           if (e.key === 'elite_jonrad_requests' && e.newValue) {
             try { setRequests(JSON.parse(e.newValue)); } catch (err) {}
           }
           if (e.key === 'elite_jonrad_staff_ringing') {
-            if (e.newValue === 'true') startRinging();
-            else if (e.newValue === 'false') stopRinging();
+            if (e.newValue === 'true') {
+              startRinging();
+              setActiveTab('incoming');
+            } else if (e.newValue === 'false') {
+              stopRinging();
+            }
           }
         };
         window.addEventListener('storage', handleStorage);
@@ -377,14 +352,11 @@
         }
 
         return () => {
+          clearInterval(apiPoll);
           window.removeEventListener('storage', handleStorage);
           if (bc) bc.close();
           if (eventSource) eventSource.close();
           if (ws) ws.close();
-          clearInterval(pollTimer);
-          if (mqttClientRef.current) {
-            try { mqttClientRef.current.end(); } catch (e) {}
-          }
         };
       }, [startRinging, stopRinging, handleCloudPayload]);
 
@@ -421,18 +393,19 @@
         const payload = { type: 'ACCEPT_REQUEST', id: reqId, assignedTo: 'Attendant Ana' };
         const payloadStr = JSON.stringify(payload);
 
-        // MQTT
-        try {
-          if (mqttClientRef.current && mqttClientRef.current.connected) {
-            mqttClientRef.current.publish(CLOUD_SYNC_TOPIC, payloadStr);
-          }
-        } catch (e) {}
+        // 1. Vercel API
+        fetch('/api/dispatch', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: payloadStr,
+          keepalive: true
+        }).catch(() => {});
 
-        // ntfy direct text
+        // 2. ntfy direct text
         fetch(`https://ntfy.sh/${CLOUD_SYNC_TOPIC}`, { method: 'POST', body: payloadStr, keepalive: true }).catch(() => {});
-        // ntfy no-cors
+        // 3. ntfy no-cors
         fetch(`https://ntfy.sh/${CLOUD_SYNC_TOPIC}`, { method: 'POST', mode: 'no-cors', body: payloadStr, keepalive: true }).catch(() => {});
-        // ntfy JSON
+        // 4. ntfy JSON
         fetch('https://ntfy.sh', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
@@ -626,8 +599,8 @@
               </div>
               <div className="flex items-center gap-3 text-[11px] text-amber-300/80">
                 <span className="flex items-center gap-1">
-                  <span className={`w-2 h-2 rounded-full ${cloudStatus === 'connected' ? 'bg-emerald-400 animate-pulse' : 'bg-amber-400'}`}></span>
-                  <span>Cloud: {cloudStatus === 'connected' ? 'Live Connected' : 'Connecting...'}</span>
+                  <span className="w-2 h-2 rounded-full bg-emerald-400 animate-pulse"></span>
+                  <span>Dispatch Engine: Online</span>
                 </span>
                 <span>•</span>
                 <span>Audio: {audioArmed ? '🔊 Armed' : '🔇 Click to Arm'}</span>

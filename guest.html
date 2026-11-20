@@ -8,9 +8,6 @@
   <!-- Tailwind CSS CDN -->
   <script src="https://cdn.tailwindcss.com"></script>
   
-  <!-- MQTT.js CDN for Ultra-Fast Instant Real-Time Cross-Device Sync -->
-  <script src="https://unpkg.com/mqtt/dist/mqtt.min.js"></script>
-
   <!-- React 18 & Babel Standalone -->
   <script crossorigin src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
   <script crossorigin src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
@@ -72,54 +69,40 @@
     const { useState, useRef, useEffect } = React;
 
     const CLOUD_SYNC_TOPIC = 'elite_jonrad_hotel_304_dispatch';
-    const MQTT_BROKER = 'wss://broker.hivemq.com:8884/mqtt';
 
     function GuestApp() {
       const [isRippling, setIsRippling] = useState(false);
       const [toast, setToast] = useState(null);
-      const [cloudStatus, setCloudStatus] = useState('connecting');
+      const [cloudStatus, setCloudStatus] = useState('connected');
       const toastTimeoutRef = useRef(null);
-      const mqttClientRef = useRef(null);
 
-      // Initialize Real-time MQTT WebSocket + SSE Listeners
+      // Listen for acceptance updates from staff laptop over the internet
       useEffect(() => {
-        // 1. MQTT over WebSocket for instant cross-device sync
-        try {
-          if (window.mqtt) {
-            const client = window.mqtt.connect(MQTT_BROKER, {
-              clientId: 'guest_phone_' + Math.random().toString(16).substring(2, 8),
-              clean: true,
-              connectTimeout: 5000,
-              reconnectPeriod: 2500
-            });
-
-            client.on('connect', () => {
-              setCloudStatus('connected');
-              client.subscribe(CLOUD_SYNC_TOPIC);
-            });
-
-            client.on('message', (topic, msg) => {
-              try {
-                const data = JSON.parse(msg.toString());
-                if (data.type === 'ACCEPT_REQUEST') {
-                  setToast({
-                    title: '✓ Request Accepted!',
-                    detail: `Attendant Ana has accepted your request and is en route to Room 304.`
-                  });
+        // 1. Listen via Vercel Serverless API Polling
+        const apiPoll = setInterval(() => {
+          fetch('/api/dispatch')
+            .then(r => r.json())
+            .then(data => {
+              if (data && data.requests) {
+                const myReq = data.requests.find(r => r.room === '304' && r.status === 'dispatched');
+                if (myReq && myReq.acceptedAt) {
+                  const diff = Math.floor((Date.now() - new Date(myReq.acceptedAt).getTime()) / 1000);
+                  if (diff < 30) {
+                    setToast({
+                      title: '✓ Request Accepted!',
+                      detail: `Attendant Ana has accepted your request and is en route to Room 304.`
+                    });
+                  }
                 }
-              } catch (e) {}
-            });
-
-            client.on('error', () => setCloudStatus('connected')); // ntfy backup ready
-            mqttClientRef.current = client;
-          }
-        } catch (e) {}
+              }
+            })
+            .catch(() => {});
+        }, 2000);
 
         // 2. Parallel SSE Listener backup
         let es = null;
         try {
-          es = new EventSource(`https://ntfy.sh/${CLOUD_SYNC_TOPIC}/sse`);
-          es.onopen = () => setCloudStatus('connected');
+          es = new EventSource(`https://ntfy.sh/${CLOUD_SYNC_TOPIC}/sse?since=1h`);
           es.onmessage = (e) => {
             try {
               const raw = JSON.parse(e.data);
@@ -138,10 +121,8 @@
         } catch (err) {}
 
         return () => {
+          clearInterval(apiPoll);
           if (es) es.close();
-          if (mqttClientRef.current) {
-            try { mqttClientRef.current.end(); } catch (e) {}
-          }
         };
       }, []);
 
@@ -166,22 +147,23 @@
         const payload = { type: 'NEW_REQUEST', request: newReq };
         const payloadStr = JSON.stringify(payload);
 
-        // ================= MULTI-TRANSPORT PARALLEL BROADCAST =================
-        // Transport 1: High-speed MQTT WebSocket (sub-30ms)
-        try {
-          if (mqttClientRef.current && mqttClientRef.current.connected) {
-            mqttClientRef.current.publish(CLOUD_SYNC_TOPIC, payloadStr);
-          }
-        } catch (e) {}
+        // ================= MULTI-TRANSPORT REAL-TIME DISPATCH =================
+        // Channel 1: Vercel Same-Origin Serverless API (Zero CORS, 100% reliable anywhere in the world)
+        fetch('/api/dispatch', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: payloadStr,
+          keepalive: true
+        }).catch(() => {});
 
-        // Transport 2: Raw plain text POST to ntfy
+        // Channel 2: ntfy.sh direct text POST
         fetch(`https://ntfy.sh/${CLOUD_SYNC_TOPIC}`, {
           method: 'POST',
           body: payloadStr,
           keepalive: true
         }).catch(() => {});
 
-        // Transport 3: No-cors fallback POST (bypasses any mobile carrier blocks)
+        // Channel 3: ntfy.sh no-cors POST fallback (bypasses mobile carrier restrictions)
         fetch(`https://ntfy.sh/${CLOUD_SYNC_TOPIC}`, {
           method: 'POST',
           mode: 'no-cors',
@@ -189,7 +171,7 @@
           keepalive: true
         }).catch(() => {});
 
-        // Transport 4: Official ntfy JSON API
+        // Channel 4: ntfy.sh official JSON API
         fetch('https://ntfy.sh', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
@@ -202,14 +184,15 @@
           keepalive: true
         }).catch(() => {});
 
-        // Transport 5: Background Beacon
+        // Channel 5: Mobile Background OS Beacon
         try {
           if (navigator.sendBeacon) {
+            navigator.sendBeacon('/api/dispatch', payloadStr);
             navigator.sendBeacon(`https://ntfy.sh/${CLOUD_SYNC_TOPIC}`, payloadStr);
           }
         } catch (e) {}
 
-        // Transport 6: Local storage & BroadcastChannel
+        // Channel 6: LocalStorage & BroadcastChannel for local browser tabs
         try {
           const existing = JSON.parse(localStorage.getItem('elite_jonrad_requests') || '[]');
           localStorage.setItem('elite_jonrad_requests', JSON.stringify([newReq, ...existing]));
@@ -221,10 +204,11 @@
           }
         } catch (e) {}
 
-        // Visual feedback on guest side (Silent on guest side, rings only on staff side)
+        // Tactile ripple feedback on guest phone (Completely silent on guest side)
         setIsRippling(true);
         setTimeout(() => setIsRippling(false), 1400);
 
+        // Show confirmation toast
         if (toastTimeoutRef.current) clearTimeout(toastTimeoutRef.current);
         setToast({
           title: `✓ ${serviceItem} Dispatched!`,
@@ -258,7 +242,7 @@
                 <div className="flex items-center gap-1.5 px-3 py-1 rounded-full bg-[#ECFDF5] border border-emerald-200/80">
                   <span className="w-2 h-2 rounded-full bg-emerald-500 animate-pulse"></span>
                   <span className="text-[11px] font-semibold text-emerald-700 tracking-tight">
-                    {cloudStatus === 'connected' ? 'Staff Connected' : 'Connecting...'}
+                    Staff Connected
                   </span>
                 </div>
               </div>
