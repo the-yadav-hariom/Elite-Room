@@ -403,8 +403,16 @@
       }, [activeTab, incomingRequests, dispatchedRequests, completedRequests, selectedCategory, searchQuery]);
 
       // Broadcast acceptance over MQTT (Dual Broker)
-      const sendAcceptBroadcast = (reqId) => {
-        const payload = { type: 'ACCEPT_REQUEST', id: reqId, assignedTo: 'Attendant Ana' };
+      const sendAcceptBroadcast = (reqId, serviceName = '') => {
+        const payload = {
+          type: 'ACCEPT_REQUEST',
+          id: reqId,
+          serviceItem: serviceName || 'In-Room Service',
+          room: '304',
+          assignedTo: 'Attendant Ana',
+          status: 'dispatched',
+          timestamp: new Date().toISOString()
+        };
         const payloadStr = JSON.stringify(payload);
         clientsRef.current.forEach(c => {
           try {
@@ -416,6 +424,16 @@
             }
           } catch (e) {}
         });
+
+        // BroadcastChannel & local storage fallback for same-device cross-tab testing
+        try {
+          if (typeof BroadcastChannel !== 'undefined') {
+            const bc = new BroadcastChannel('elite_jonrad_hotel_bus');
+            bc.postMessage(payload);
+          }
+          localStorage.setItem('elite_jonrad_dispatch_event', JSON.stringify({ reqId, serviceItem: serviceName, time: Date.now(), assignedTo: 'Attendant Ana' }));
+          localStorage.setItem('elite_jonrad_guest_active_req', JSON.stringify({ serviceItem: serviceName || 'In-Room Service', room: '304', status: 'dispatched', assignedTo: 'Attendant Ana', timestamp: new Date().toISOString() }));
+        } catch (e) {}
       };
 
       // Staff Accepts Request:
@@ -423,11 +441,14 @@
       // 2. Removes from incoming side and moves to dispatched side
       const handleAccept = useCallback((reqId) => {
         stopRinging();
-        setRequests(prev =>
-          prev.map(r => r.id === reqId ? { ...r, status: 'dispatched', assignedTo: 'Attendant Ana' } : r)
-        );
+        let targetService = '';
+        setRequests(prev => {
+          const found = prev.find(r => r.id === reqId);
+          if (found) targetService = found.serviceItem;
+          return prev.map(r => r.id === reqId ? { ...r, status: 'dispatched', assignedTo: 'Attendant Ana' } : r);
+        });
         setActiveTab('dispatched');
-        sendAcceptBroadcast(reqId);
+        sendAcceptBroadcast(reqId, targetService);
 
         setQuickNotice('✓ Request Accepted! Ringtone stopped. Moved to Dispatch Side.');
         setTimeout(() => setQuickNotice(null), 4000);
@@ -440,7 +461,7 @@
         setRequests(prev =>
           prev.map(r => {
             if (r.status === 'pending') {
-              sendAcceptBroadcast(r.id);
+              sendAcceptBroadcast(r.id, r.serviceItem);
               return { ...r, status: 'dispatched', assignedTo: 'Attendant Ana' };
             }
             return r;
@@ -454,8 +475,11 @@
       // Fast Process: Accept + Send ETA
       const handleQuickAcceptAndEta = useCallback((reqId, mins = 3) => {
         stopRinging();
-        setRequests(prev =>
-          prev.map(r =>
+        let targetService = '';
+        setRequests(prev => {
+          const found = prev.find(r => r.id === reqId);
+          if (found) targetService = found.serviceItem;
+          return prev.map(r =>
             r.id === reqId
               ? {
                   ...r,
@@ -464,10 +488,10 @@
                   notes: r.notes ? `${r.notes} | ETA: ${mins}m` : `Attendant en route • ETA: ${mins}m`
                 }
               : r
-          )
-        );
+          );
+        });
         setActiveTab('dispatched');
-        sendAcceptBroadcast(reqId);
+        sendAcceptBroadcast(reqId, targetService);
 
         setQuickNotice(`⚡ Fast-Accepted with ${mins}m ETA! Moved to Dispatch Side.`);
         setTimeout(() => setQuickNotice(null), 4000);

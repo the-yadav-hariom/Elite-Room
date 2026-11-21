@@ -102,6 +102,14 @@ export function RequestProvider({ children }) {
 
   const [isStaffRinging, setIsStaffRinging] = useState(false);
   const [latestRingingRequest, setLatestRingingRequest] = useState(null);
+  const [lastDispatchedEvent, setLastDispatchedEvent] = useState(() => {
+    try {
+      const saved = localStorage.getItem('elite_jonrad_dispatch_event');
+      return saved ? JSON.parse(saved) : null;
+    } catch (e) {
+      return null;
+    }
+  });
 
   // Sync state to localStorage for local cross-tab communication
   useEffect(() => {
@@ -132,6 +140,7 @@ export function RequestProvider({ children }) {
       );
       setIsStaffRinging(false);
       setLatestRingingRequest(null);
+      setLastDispatchedEvent(payload);
     } else if (payload.type === 'COMPLETE_REQUEST' && payload.id) {
       setRequests(prev =>
         prev.map(r => r.id === payload.id ? { ...r, status: 'completed' } : r)
@@ -440,6 +449,7 @@ export function RequestProvider({ children }) {
         requests,
         isStaffRinging,
         latestRingingRequest,
+        lastDispatchedEvent,
         stopStaffRinging,
         addGuestRequest,
         acceptRequest,

@@ -69,7 +69,7 @@
   <div id="root"></div>
 
   <script type="text/babel">
-    const { useState, useRef, useEffect } = React;
+    const { useState, useRef, useEffect, useCallback } = React;
 
     const MQTT_TOPIC = 'elite_jonrad_hotel_304_dispatch';
 
@@ -80,10 +80,46 @@
 
     function GuestApp() {
       const [isRippling, setIsRippling] = useState(false);
-      const [toast, setToast] = useState(null);
+      const [alertInfo, setAlertInfo] = useState(null);
+      const [activeRequest, setActiveRequest] = useState(() => {
+        try {
+          const saved = localStorage.getItem('elite_jonrad_guest_active_req');
+          return saved ? JSON.parse(saved) : null;
+        } catch (e) {
+          return null;
+        }
+      });
       const [cloudStatus, setCloudStatus] = useState('connecting');
-      const toastTimeoutRef = useRef(null);
+      const alertTimeoutRef = useRef(null);
       const clientsRef = useRef([]);
+
+      // Handle staff acceptance notification on guest side
+      const handleStaffAccepted = useCallback((payload) => {
+        const attendant = (payload && payload.assignedTo) || 'Attendant Ana';
+        setActiveRequest(prev => {
+          const updated = {
+            serviceItem: prev ? prev.serviceItem : 'In-Room Service',
+            room: '304',
+            status: 'dispatched',
+            assignedTo: attendant,
+            timestamp: new Date().toISOString()
+          };
+          try {
+            localStorage.setItem('elite_jonrad_guest_active_req', JSON.stringify(updated));
+          } catch (e) {}
+          return updated;
+        });
+
+        // Show prominent "Your request dispatched" alert on guest phone!
+        if (alertTimeoutRef.current) clearTimeout(alertTimeoutRef.current);
+        setAlertInfo({
+          type: 'dispatched',
+          title: 'Your request dispatched',
+          detail: `${attendant} has accepted your request and is en route to Room 304.`,
+          timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
+        });
+        alertTimeoutRef.current = setTimeout(() => setAlertInfo(null), 12000);
+      }, []);
 
       // Connect in parallel to Dual MQTT SSL WebSocket Brokers
       useEffect(() => {
@@ -135,11 +171,8 @@
               client.onMessageArrived = (message) => {
                 try {
                   const payload = JSON.parse(message.payloadString);
-                  if (payload.type === 'ACCEPT_REQUEST' && payload.id) {
-                    setToast({
-                      title: '✓ Request Accepted!',
-                      detail: `Attendant Ana has accepted your request and is on the way to Room 304.`
-                    });
+                  if (payload.type === 'ACCEPT_REQUEST') {
+                    handleStaffAccepted(payload);
                   }
                 } catch (e) {}
               };
@@ -154,17 +187,46 @@
 
         startBrokerConnections();
 
+        // Local storage and BroadcastChannel listener for same-device cross-tab testing
+        let bc = null;
+        if (typeof BroadcastChannel !== 'undefined') {
+          bc = new BroadcastChannel('elite_jonrad_hotel_bus');
+          bc.onmessage = (e) => {
+            if (e.data && e.data.type === 'ACCEPT_REQUEST') {
+              handleStaffAccepted(e.data);
+            }
+          };
+        }
+
+        const handleStorage = (e) => {
+          if (e.key === 'elite_jonrad_dispatch_event' && e.newValue) {
+            try {
+              const parsed = JSON.parse(e.newValue);
+              handleStaffAccepted(parsed);
+            } catch (err) {}
+          }
+          if (e.key === 'elite_jonrad_guest_active_req' && e.newValue) {
+            try {
+              setActiveRequest(JSON.parse(e.newValue));
+            } catch (err) {}
+          }
+        };
+        window.addEventListener('storage', handleStorage);
+
         return () => {
           isMounted = false;
+          window.removeEventListener('storage', handleStorage);
+          if (bc) bc.close();
           activeClients.forEach(c => {
             try { if (c.isConnected()) c.disconnect(); } catch (e) {}
           });
         };
-      }, []);
+      }, [handleStaffAccepted]);
 
       const triggerCall = (serviceItem, category, department, note) => {
+        const reqId = `req-${Date.now()}`;
         const newReq = {
-          id: `req-${Date.now()}`,
+          id: reqId,
           room: '304',
           roomType: 'Executive King Room',
           floor: 'Floor 3',
@@ -180,11 +242,22 @@
           icon: serviceItem.includes('Water') ? '💧' : serviceItem.includes('Towel') ? '🧖' : serviceItem.includes('Bill') ? '🧾' : serviceItem.includes('AC') ? '🔧' : serviceItem.includes('Clean') ? '🧹' : '🛎️'
         };
 
+        // Set active request to submitted
+        const reqState = {
+          id: reqId,
+          serviceItem,
+          status: 'submitted',
+          timestamp: new Date().toISOString()
+        };
+        setActiveRequest(reqState);
+        try {
+          localStorage.setItem('elite_jonrad_guest_active_req', JSON.stringify(reqState));
+        } catch (e) {}
+
         const payload = { type: 'NEW_REQUEST', request: newReq };
         const payloadStr = JSON.stringify(payload);
 
         // 1. Dual-Broker Parallel Broadcast (Reaches Staff Laptop Instantly on both brokers)
-        let broadcastCount = 0;
         clientsRef.current.forEach(c => {
           try {
             if (c && c.isConnected()) {
@@ -192,7 +265,6 @@
               msg.destinationName = MQTT_TOPIC;
               msg.qos = 1;
               c.send(msg);
-              broadcastCount++;
             }
           } catch (e) {}
         });
@@ -213,18 +285,15 @@
         setIsRippling(true);
         setTimeout(() => setIsRippling(false), 1400);
 
-        // Confirmation toast on guest phone
-        if (toastTimeoutRef.current) clearTimeout(toastTimeoutRef.current);
-        setToast({
-          title: `✓ ${serviceItem} Dispatched!`,
-          detail: `Staff terminal on laptop is ringing now for Room 304.`
+        // 3. SHOW GUEST SIDE ALERT: "Your request submitted"
+        if (alertTimeoutRef.current) clearTimeout(alertTimeoutRef.current);
+        setAlertInfo({
+          type: 'submitted',
+          title: 'Your request submitted',
+          detail: `Your request for "${serviceItem}" has been submitted to Floor 3 Staff Desk.`,
+          timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
         });
-        toastTimeoutRef.current = setTimeout(() => setToast(null), 8000);
-      };
-          title: `✓ ${serviceItem} Dispatched!`,
-          detail: `Staff terminal on laptop is ringing now for Room 304.`
-        });
-        toastTimeoutRef.current = setTimeout(() => setToast(null), 8000);
+        alertTimeoutRef.current = setTimeout(() => setAlertInfo(null), 10000);
       };
 
       return (
@@ -280,6 +349,63 @@
                   </svg>
                 </div>
               </div>
+
+              {/* Live Request Status Tracker Card */}
+              {activeRequest && (
+                <div
+                  className={`rounded-2xl p-3.5 mt-2.5 border-2 shadow-sm transition-all duration-300 flex items-center justify-between ${
+                    activeRequest.status === 'dispatched'
+                      ? 'bg-emerald-50/95 border-emerald-400 text-emerald-950'
+                      : 'bg-amber-50/95 border-amber-300 text-amber-950'
+                  }`}
+                >
+                  <div className="flex items-center gap-3">
+                    <div
+                      className={`w-9 h-9 rounded-xl flex items-center justify-center text-lg shrink-0 ${
+                        activeRequest.status === 'dispatched'
+                          ? 'bg-emerald-100 text-emerald-700'
+                          : 'bg-amber-100 text-amber-700'
+                      }`}
+                    >
+                      {activeRequest.status === 'dispatched' ? '🚀' : '🟡'}
+                    </div>
+                    <div>
+                      <div className="flex items-center gap-2">
+                        <span className="text-[11px] font-extrabold uppercase tracking-wider">
+                          {activeRequest.status === 'dispatched'
+                            ? 'Your Request Dispatched'
+                            : 'Your Request Submitted'}
+                        </span>
+                        <span
+                          className={`w-2 h-2 rounded-full ${
+                            activeRequest.status === 'dispatched'
+                              ? 'bg-emerald-500 animate-pulse'
+                              : 'bg-amber-500 animate-ping'
+                          }`}
+                        ></span>
+                      </div>
+                      <p className="text-xs font-bold text-slate-900 mt-0.5">
+                        {activeRequest.serviceItem}
+                      </p>
+                      <p className="text-[10px] text-slate-500 mt-0.5">
+                        {activeRequest.status === 'dispatched'
+                          ? `${activeRequest.assignedTo || 'Attendant Ana'} en route to Room 304`
+                          : 'Staff laptop terminal is ringing now • Waiting for dispatch'}
+                      </p>
+                    </div>
+                  </div>
+
+                  <span
+                    className={`text-[10px] font-black uppercase px-2.5 py-1 rounded-full border ${
+                      activeRequest.status === 'dispatched'
+                        ? 'bg-emerald-200 text-emerald-900 border-emerald-400'
+                        : 'bg-amber-200 text-amber-900 border-amber-400'
+                    }`}
+                  >
+                    {activeRequest.status === 'dispatched' ? 'Dispatched' : 'Submitted'}
+                  </span>
+                </div>
+              )}
             </header>
 
             {/* Hero Section */}
@@ -373,16 +499,47 @@
               </div>
             </section>
 
-            {/* Toast */}
-            {toast && (
-              <div className="fixed bottom-6 left-4 right-4 max-w-md mx-auto bg-[#091A36] text-white p-4 rounded-2xl shadow-2xl border border-amber-300/30 flex items-center justify-between gap-3 animate-in fade-in slide-in-from-bottom-4 z-50">
-                <div>
-                  <h4 className="text-xs font-bold text-amber-200">{toast.title}</h4>
-                  <p className="text-[11px] text-slate-300 mt-0.5">{toast.detail}</p>
+            {/* Top Floating Alert Banner: "Your request submitted" & "Your request dispatched" */}
+            {alertInfo && (
+              <div
+                className={`fixed top-4 left-4 right-4 max-w-md mx-auto z-50 p-4 rounded-2xl shadow-2xl border-2 flex items-start justify-between gap-3 animate-in slide-in-from-top-4 duration-300 ${
+                  alertInfo.type === 'dispatched'
+                    ? 'bg-[#064E3B] text-white border-emerald-400'
+                    : 'bg-[#091A36] text-white border-amber-400'
+                }`}
+              >
+                <div
+                  className={`w-10 h-10 rounded-xl flex items-center justify-center text-xl shrink-0 border ${
+                    alertInfo.type === 'dispatched'
+                      ? 'bg-emerald-500/20 text-emerald-200 border-emerald-400/40'
+                      : 'bg-amber-400/20 text-amber-300 border-amber-400/30'
+                  }`}
+                >
+                  {alertInfo.type === 'dispatched' ? '🚀' : '🛎️'}
+                </div>
+                <div className="flex-1">
+                  <div className="flex items-center gap-2">
+                    <span
+                      className={`text-[10px] font-extrabold uppercase tracking-widest px-2 py-0.5 rounded-full font-mono ${
+                        alertInfo.type === 'dispatched'
+                          ? 'bg-emerald-400 text-emerald-950 font-black'
+                          : 'bg-amber-400 text-slate-950 font-black'
+                      }`}
+                    >
+                      {alertInfo.type === 'dispatched' ? 'DISPATCHED' : 'SUBMITTED'}
+                    </span>
+                    <span className="text-[10px] text-slate-300 font-medium">Room 304</span>
+                  </div>
+                  <h4 className="text-sm font-bold text-white mt-1 leading-snug">
+                    {alertInfo.title}
+                  </h4>
+                  <p className="text-xs text-slate-200 mt-0.5 leading-relaxed">
+                    {alertInfo.detail}
+                  </p>
                 </div>
                 <button
-                  onClick={() => setToast(null)}
-                  className="text-slate-400 hover:text-white text-xs px-2 py-1"
+                  onClick={() => setAlertInfo(null)}
+                  className="text-slate-300 hover:text-white text-sm px-2 py-1 cursor-pointer"
                 >
                   ✕
                 </button>
