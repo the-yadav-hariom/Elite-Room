@@ -2,9 +2,11 @@ import React, { createContext, useContext, useState, useEffect, useCallback, use
 
 const RequestContext = createContext();
 
-const CLOUD_SYNC_TOPIC = 'elite_jonrad_hotel_304_dispatch';
-const CLOUD_SYNC_URL = `https://ntfy.sh/${CLOUD_SYNC_TOPIC}`;
-const CLOUD_SYNC_WS = `wss://ntfy.sh/${CLOUD_SYNC_TOPIC}/ws`;
+const MQTT_TOPIC = 'elite_jonrad_hotel_304_dispatch';
+const BROKERS = [
+  { name: 'emqx', host: 'broker.emqx.io', port: 8084, path: '/mqtt' },
+  { name: 'hivemq', host: 'broker.hivemq.com', port: 8884, path: '/mqtt' }
+];
 
 const INITIAL_REQUESTS = [
   {
@@ -137,60 +139,65 @@ export function RequestProvider({ children }) {
     }
   }, []);
 
-  // ================= BULLETPROOF REAL-TIME RECEIVER (SSE + WS + 1s SHORT-POLL) =================
+  const mqttClientsRef = useRef([]);
+
+  // ================= DUAL-BROKER MQTT WEBSOCKET REAL-TIME RECEIVER =================
   useEffect(() => {
-    let eventSource = null;
-    let ws = null;
+    let isMounted = true;
+    const activeClients = [];
 
-    // 1. Server-Sent Events (SSE)
-    try {
-      eventSource = new EventSource(`${CLOUD_SYNC_URL}/sse`);
-      eventSource.onmessage = (event) => {
+    const initBrokers = () => {
+      const PahoMQTT = (typeof window !== 'undefined' && window.Paho && window.Paho.MQTT) ? window.Paho.MQTT : null;
+      if (!PahoMQTT) {
+        setTimeout(initBrokers, 400);
+        return;
+      }
+
+      BROKERS.forEach(b => {
         try {
-          const raw = JSON.parse(event.data);
-          if (raw.event === 'message' && raw.message) {
-            let payload = null;
-            try { payload = JSON.parse(raw.message); } catch (e) { payload = raw.message; }
-            handleIncomingCloudMessage(payload);
-          }
-        } catch (e) {}
-      };
-    } catch (err) {}
+          const clientId = `spa_${b.name}_${Math.random().toString(16).substring(2, 8)}`;
+          const client = new PahoMQTT.Client(b.host, b.port, b.path, clientId);
 
-    // 2. Parallel WebSocket (ultra-low latency sub-50ms)
-    try {
-      ws = new WebSocket(CLOUD_SYNC_WS);
-      ws.onmessage = (event) => {
-        try {
-          const raw = JSON.parse(event.data);
-          if (raw.event === 'message' && raw.message) {
-            let payload = null;
-            try { payload = JSON.parse(raw.message); } catch (e) { payload = raw.message; }
-            handleIncomingCloudMessage(payload);
-          }
-        } catch (e) {}
-      };
-    } catch (err) {}
-
-    // 3. Fallback 1-second short-poll (guarantees delivery if SSE/WS blocked by Wi-Fi or firewall)
-    const pollInterval = setInterval(() => {
-      fetch(`${CLOUD_SYNC_URL}/json?poll=1&since=12s`)
-        .then(r => r.text())
-        .then(text => {
-          text.trim().split('\n').forEach(line => {
-            try {
-              const raw = JSON.parse(line);
-              if (raw.event === 'message' && raw.message) {
-                let payload = null;
-                try { payload = JSON.parse(raw.message); } catch (e) { payload = raw.message; }
-                handleIncomingCloudMessage(payload);
+          const doConnect = () => {
+            if (!isMounted) return;
+            client.connect({
+              useSSL: true,
+              timeout: 6,
+              keepAliveInterval: 30,
+              cleanSession: true,
+              onSuccess: () => {
+                if (isMounted) {
+                  try { client.subscribe(MQTT_TOPIC, { qos: 1 }); } catch (e) {}
+                }
+              },
+              onFailure: () => {
+                if (isMounted) setTimeout(doConnect, 4000);
               }
-            } catch (e) {}
-          });
-        }).catch(() => {});
-    }, 1000);
+            });
+          };
 
-    // 4. Local tab storage event listener
+          client.onConnectionLost = () => {
+            if (isMounted) setTimeout(doConnect, 2500);
+          };
+
+          client.onMessageArrived = (message) => {
+            try {
+              const payload = JSON.parse(message.payloadString);
+              handleIncomingCloudMessage(payload);
+            } catch (e) {}
+          };
+
+          doConnect();
+          activeClients.push(client);
+        } catch (e) {}
+      });
+
+      mqttClientsRef.current = activeClients;
+    };
+
+    initBrokers();
+
+    // Local tab storage event listener
     const handleStorage = (e) => {
       if (e.key === 'elite_jonrad_requests' && e.newValue) {
         try {
@@ -208,50 +215,48 @@ export function RequestProvider({ children }) {
     };
     window.addEventListener('storage', handleStorage);
 
+    let bc = null;
+    if (typeof BroadcastChannel !== 'undefined') {
+      bc = new BroadcastChannel('elite_jonrad_hotel_bus');
+      bc.onmessage = (e) => {
+        if (e.data) handleIncomingCloudMessage(e.data);
+      };
+    }
+
     return () => {
-      if (eventSource) eventSource.close();
-      if (ws) ws.close();
-      clearInterval(pollInterval);
+      isMounted = false;
       window.removeEventListener('storage', handleStorage);
+      if (bc) bc.close();
+      activeClients.forEach(c => {
+        try { if (c.isConnected()) c.disconnect(); } catch (e) {}
+      });
     };
   }, [handleIncomingCloudMessage]);
 
-  // ================= MULTI-TRANSPORT CLOUD BROADCAST (PHONE -> LAPTOP) =================
+  // ================= DUAL-BROKER MQTT CLOUD BROADCAST (PHONE -> LAPTOP) =================
   const broadcastCloudMessage = (payload) => {
     const payloadStr = JSON.stringify(payload);
 
-    // Transport 1: Raw string POST to topic (ntfy reads entire body as message)
-    fetch(CLOUD_SYNC_URL, {
-      method: 'POST',
-      body: payloadStr,
-      keepalive: true
-    }).catch(() => {});
+    // 1. Dual MQTT Broadcast
+    const PahoMQTT = (typeof window !== 'undefined' && window.Paho && window.Paho.MQTT) ? window.Paho.MQTT : null;
+    if (PahoMQTT && mqttClientsRef.current) {
+      mqttClientsRef.current.forEach(c => {
+        try {
+          if (c && c.isConnected()) {
+            const msg = new PahoMQTT.Message(payloadStr);
+            msg.destinationName = MQTT_TOPIC;
+            msg.qos = 1;
+            c.send(msg);
+          }
+        } catch (e) {}
+      });
+    }
 
-    // Transport 2: no-cors POST (bypasses any mobile carrier/CORS firewall)
-    fetch(CLOUD_SYNC_URL, {
-      method: 'POST',
-      mode: 'no-cors',
-      body: payloadStr,
-      keepalive: true
-    }).catch(() => {});
-
-    // Transport 3: Official JSON API with topic and message fields
-    fetch('https://ntfy.sh', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        topic: CLOUD_SYNC_TOPIC,
-        message: payloadStr,
-        title: 'Elite Jonrad Hotel - Room 304',
-        priority: 5
-      }),
-      keepalive: true
-    }).catch(() => {});
-
-    // Transport 4: navigator.sendBeacon for mobile OS background reliability
+    // 2. Local BroadcastChannel
     try {
-      if (navigator.sendBeacon) {
-        navigator.sendBeacon(CLOUD_SYNC_URL, payloadStr);
+      if (typeof BroadcastChannel !== 'undefined') {
+        const bc = new BroadcastChannel('elite_jonrad_hotel_bus');
+        bc.postMessage(payload);
       }
     } catch (e) {}
   };
